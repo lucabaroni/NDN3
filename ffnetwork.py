@@ -7,7 +7,6 @@ import tensorflow as tf
 from .layer import *
 from .tlayer import *
 
-
 class FFNetwork(object):
     """Implementation of simple fully-connected feed-forward neural network. 
     These networks can be composed to create much more complex network 

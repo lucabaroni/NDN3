@@ -235,7 +235,7 @@ def expand_input_dims_to_3d(input_size):
     """Utility function to turn inputs into 3-d vectors"""
 
     if not isinstance(input_size, list):
-        input3d = [1, input_size, 1]
+        input3d = [input_size, 1, 1]
     else:
         input3d = input_size[:]
     while len(input3d) < 3:
@@ -473,6 +473,29 @@ def create_time_embedding(stim, pdims, up_fac=1, tent_spacing=1):
 
     return xmat
 # END create_time_embedding
+
+
+def create_NL_embedding(stim, bounds):
+    """Format for applying input nonlinearity to stimulus"""
+    NT, NF = stim.shape
+    NNL = len(bounds)
+    NLstim = np.zeros([NT, NF, NNL])
+    for nn in range(NNL):
+        tmp = np.zeros([NT, NF])
+        a = np.where(stim < bounds[nn])
+        b = np.where(stim >= bounds[nn])
+        if nn == 0:
+            tmp[a] = 1
+        else:
+            tmp[a] = np.add(np.add(stim[a], -bounds[nn])/(bounds[nn]-bounds[nn-1]), 1)
+        if nn < NNL-1:
+            tmp[b] = np.add(np.add(-stim[b], bounds[nn])/(bounds[nn+1]-bounds[nn]), 1)
+        else:
+            tmp[b] = 1
+        tmp = np.maximum(tmp, 0)
+        NLstim[:, :, nn] = tmp.copy()
+    print("Generated NLstim: %d x %d x %d" % (NT, NF, NNL))
+    return np.reshape(NLstim, [NT, NF*NNL])
 
 
 def generate_spike_history(robs, nlags, neg_constraint=True, reg_par=0,

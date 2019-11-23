@@ -202,6 +202,8 @@ class FFNetwork(object):
         for nn in range(self.num_layers):
             # Add time lags to first input dimension
             if self.time_expand[nn] > 0:
+                if not isinstance(layer_sizes[nn], list):
+                    layer_sizes[nn] = [layer_sizes[nn], 1, 1]
                 layer_sizes[nn] += [self.time_expand[nn]]  # add number of lags to input dimesions
 
             if self.layer_types[nn] == 'normal':
@@ -275,6 +277,21 @@ class FFNetwork(object):
                     pos_constraint=network_params['pos_constraints'][nn],
                     log_activations=network_params['log_activations']))
 
+            elif self.layer_types[nn] == 'filter':
+
+                self.layers.append(FilterLayer(
+                    scope='add_layer_%i' % nn,
+                    input_dims=layer_sizes[nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
+                if nn < self.num_layers:
+                    layer_sizes[nn+1] = self.layers[nn].output_dims.copy()
+
             elif self.layer_types[nn] == 'spkNL':
 
                 self.layers.append(SpkNL_Layer(
@@ -327,7 +344,7 @@ class FFNetwork(object):
 
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
-                    layer_sizes[nn+1] = self.layers[nn].output_dims
+                    layer_sizes[nn+1] = self.layers[nn].output_dims.copy()
 
             elif self.layer_types[nn] == 'temporal':
                 self.layers.append(TLayer(
@@ -377,7 +394,7 @@ class FFNetwork(object):
 
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
-                    layer_sizes[nn + 1] = self.layers[nn].output_dims
+                    layer_sizes[nn + 1] = self.layers[nn].output_dims.copy()
 
             elif self.layer_types[nn] == 'convsep':
 
@@ -408,7 +425,7 @@ class FFNetwork(object):
 
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
-                    layer_sizes[nn+1] = self.layers[nn].output_dims
+                    layer_sizes[nn+1] = self.layers[nn].output_dims.copy()
 
             elif self.layer_types[nn] == 'hadi_readout':
 
@@ -417,7 +434,7 @@ class FFNetwork(object):
                     # this should be the case:
                     # nlags=network_params['time_expand'][nn],
                     # but since we don't have temporal side network we'll do this for now:
-                    #nlags=None,
+                    # nlags=None,
                     input_dims=layer_sizes[nn],
                     num_filters=layer_sizes[nn + 1],
                     xy_out=network_params['xy_out'][nn],
@@ -439,7 +456,7 @@ class FFNetwork(object):
                 if network_params['conv_filter_widths'][nn] is None:
                     conv_filter_size = layer_sizes[nn]
                 else:
-                    #print(self.layer_types[nn], layer_sizes[nn])
+                    # print(self.layer_types[nn], layer_sizes[nn])
                     if len(layer_sizes[nn]) > 3:
                         dim0size = layer_sizes[nn][0]*np.prod(layer_sizes[nn][3:])
                     else:
@@ -466,7 +483,7 @@ class FFNetwork(object):
 
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
-                    layer_sizes[nn+1] = self.layers[nn].output_dims
+                    layer_sizes[nn+1] = self.layers[nn].output_dims.copy()
 
             elif self.layer_types[nn] == 'convLNL':
 
@@ -497,11 +514,9 @@ class FFNetwork(object):
 
                 # Modify output size to take into account shifts
                 if nn < self.num_layers:
-                    layer_sizes[nn+1] = self.layers[nn].output_dims
-
+                    layer_sizes[nn+1] = self.layers[nn].output_dims.copy()
             else:
                 raise TypeError('Layer type %i not defined.' % nn)
-
     # END FFNetwork._define_network
 
     def build_fit_variable_list(self, fit_parameter_list):
@@ -524,7 +539,7 @@ class FFNetwork(object):
                 if self.time_expand[layer] > 0:
                     self.layers[layer].build_graph(
                         self.time_embed(inputs=inputs, batch_sz=batch_size, num_lags=self.time_expand[layer]),
-                        params_dict, use_dropout = use_dropout)
+                        params_dict, use_dropout=use_dropout)
                 else:
                     self.layers[layer].build_graph(inputs, params_dict, batch_size=batch_size, use_dropout=use_dropout)
                 inputs = self.layers[layer].outputs
@@ -692,11 +707,12 @@ class SideNetwork(FFNetwork):
             for input_nn in range(num_layers):
 
                 if (self.num_space == 1) or \
-                        self.num_space == np.prod(input_network.layers[input_nn].output_dims[1:]):
+                        self.num_space == np.prod(input_network.layers[input_nn].output_dims[1:3]):
                     new_slice = tf.reshape(input_network.layers[input_nn].outputs,
                                            [-1, self.num_space, self.num_units[input_nn]])
+
                 else:  # spatial positions converted to different filters (binocular)
-                    native_space = np.prod(input_network.layers[input_nn].output_dims[1:])
+                    native_space = np.prod(input_network.layers[input_nn].output_dims[1:3])
                     native_filters = input_network.layers[input_nn].output_dims[0]
                     tmp = tf.reshape(input_network.layers[input_nn].outputs,
                                            [-1, 1, native_space, native_filters])
@@ -714,7 +730,7 @@ class SideNetwork(FFNetwork):
                     inputs_raw = tf.concat([inputs_raw, new_slice], 2)
 
             # Need to put layer dimension with the filters as bottom dimension instead of top
-            inputs = tf.reshape(inputs_raw, [-1, np.sum(self.num_units)*self.num_space] )
+            inputs = tf.reshape(inputs_raw, [-1, np.sum(self.num_units)*self.num_space])
             #inputs = tf.reshape(inputs_raw, [-1, num_layers*max_units*self.num_space])
 
             # Now standard graph-build (could just call the parent with inputs)

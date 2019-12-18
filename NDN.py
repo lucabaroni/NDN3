@@ -7,6 +7,7 @@ from copy import deepcopy
 import os
 import warnings
 import shutil
+import math
 
 import numpy as np
 import tensorflow as tf
@@ -195,10 +196,9 @@ class NDN(object):
                     self.network_list[nn]['input_dims'] = input_dims_measured
                 # print('network %i:' % nn, input_dims_measured)
             else:
-                # print('network %i:' % nn, network_list[nn]['input_dims'],
-                # input_dims_measured )
+                # print('network %i:' % nn, network_list[nn]['input_dims'], input_dims_measured )
                 assert self.network_list[nn]['input_dims'] == \
-                       list(input_dims_measured), 'Input_dims dont match.'
+                       list(input_dims_measured), 'Input_dims dont match. network '+str(nn)
 
             # Build networks
             if self.network_list[nn]['network_type'] == 'side':
@@ -370,7 +370,8 @@ class NDN(object):
             # define cost function
             if self.noise_dist == 'gaussian':
                 with tf.name_scope('gaussian_loss'):
-                    cost.append(tf.nn.l2_loss(data_out - pred) / nt)
+                    cost.append(tf.nn.l2_loss(data_out - pred) / nt * 2)  # x2: l2_loss gives half the norm (!)
+                    #cost.append(tf.reduce_sum(tf.reduce_sum(tf.square(data_out-pred), axis=0) / nt))
                     unit_cost.append(tf.reduce_mean(tf.square(data_out-pred), axis=0))
 
             elif self.noise_dist == 'poisson':
@@ -636,7 +637,7 @@ class NDN(object):
                 test_indxs=data_indxs,
                 test_batch_size=self.batch_size)
 
-            #num_batches_tr = data_indxs.shape[0] // self.batch_size
+            #num_batches_tr = math.ceil(data_indxs.shape[0] / self.batch_size)
             #cost_tr = 0
             #for batch_tr in range(num_batches_tr):
             #    batch_indxs_tr = data_indxs[
@@ -733,7 +734,7 @@ class NDN(object):
             if blocks is None:
                 if self.batch_size is not None:
                     batch_size = self.batch_size
-                    num_batches_test = data_indxs.shape[0] // batch_size
+                    num_batches_test = math.ceil(data_indxs.shape[0] / batch_size)
                 else:
                     num_batches_test = 1
                     batch_size = data_indxs.shape[0]
@@ -771,6 +772,9 @@ class NDN(object):
                     unit_cost = sess.run(self.unit_cost, feed_dict=feed_dict)
                 else:
                     unit_cost = np.add(unit_cost, sess.run(self.unit_cost, feed_dict=feed_dict))
+                    #ucost = sess.run(self.unit_cost, feed_dict=feed_dict)
+                    #cost = sess.run(self.cost, feed_dict=feed_dict)
+                    #print(np.sum(ucost), cost)
 
             ll_neuron = np.divide(unit_cost, num_batches_test)
 
@@ -834,8 +838,7 @@ class NDN(object):
             batch_size_save = None
 
         # Get prediction for complete range
-        #num_batches_test = data_indxs.shape[0] // self.batch_size
-        num_batches_test = np.ceil(data_indxs.shape[0]/self.batch_size).astype(int)
+        num_batches_test = math.ceil(data_indxs.shape[0] / self.batch_size)
 
         # Place graph operations on CPU
         if not use_gpu:
@@ -940,6 +943,8 @@ class NDN(object):
                     self.networks[nn].layers[ll].biases.copy()
                 target.networks[nn].layers[ll].reg = \
                     self.networks[nn].layers[ll].reg.reg_copy()
+                target.networks[nn].layers[ll].normalize_weights = \
+                    self.networks[nn].layers[ll].normalize_weights
             target.networks[nn].input_masks = deepcopy(self.networks[nn].input_masks)
         return target
 
@@ -1491,7 +1496,7 @@ class NDN(object):
         if early_stop_mode > 0:
             prev_costs = np.multiply(np.ones(opt_params['early_stop']), float('NaN'))
 
-        num_batches_tr = train_indxs.shape[0] // opt_params['batch_size']
+        num_batches_tr = math.ceil(train_indxs.shape[0] / opt_params['batch_size'])
 
         if opt_params['run_diagnostics']:
             run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
@@ -1520,7 +1525,7 @@ class NDN(object):
 
         if self.time_spread is not None:
             # get number of batches and their order for train indxs
-            num_batches_tr = train_indxs.shape[0] // self.batch_size
+            num_batches_tr = math.ceil(train_indxs.shape[0] / self.batch_size)
             batch_order = np.arange(num_batches_tr)
 
         # start training loop
@@ -1750,7 +1755,7 @@ class NDN(object):
         """Utility function to clean up code in `_train_adam` method"""
 
         if test_batch_size is not None:
-            num_batches_test = test_indxs.shape[0] // test_batch_size
+            num_batches_test = math.ceil(test_indxs.shape[0] / test_batch_size)
             cost_test = 0
             for batch_test in range(num_batches_test):
                 batch_indxs_test = test_indxs[batch_test * test_batch_size:
@@ -1845,7 +1850,7 @@ class NDN(object):
         if early_stop_mode > 0:
             prev_costs = np.multiply(np.ones(opt_params['early_stop']), float('NaN'))
 
-        #num_batches_tr = train_indxs.shape[0] // opt_params
+        #num_batches_tr = math.ceil(train_indxs.shape[0] / opt_params)
         if data_filters is None:  # then make basic data_filters
             df = []
             for nn in range(len(output_data)):
@@ -1886,7 +1891,7 @@ class NDN(object):
 
         # if self.time_spread is not None:
         # get number of batches and their order for train indxs
-        #   num_batches_tr = train_indxs.shape[0] // self.batch_size
+        #   num_batches_tr = math.ceil(train_indxs.shape[0] / self.batch_size)
         batch_order = np.arange(num_batches_tr)
 
         # start training loop
@@ -2335,7 +2340,7 @@ class NDN(object):
         print('Model pickled to %s' % save_file)
     # END NDN3.save_model
 
-    def _data_format(self, input_data, output_data, data_filters=None):
+    def _data_format(self, input_data, output_data=None, data_filters=None):
 
         if type(input_data) is not list:
             input_data = [input_data]
@@ -2349,7 +2354,7 @@ class NDN(object):
             output_data = [None] * num_outputs
             for nn in range(num_outputs):
                 output_data[nn] = np.zeros(
-                    [self.num_examples, self.networks[self.ffnet_out[nn]].layers[-1].weights.shape[1]],
+                    [self.num_examples, np.prod(self.networks[self.ffnet_out[nn]].layers[-1].output_dims)],
                     dtype='float32')
 
         if data_filters is not None:

@@ -1644,6 +1644,11 @@ class NDN(object):
                 train_writer.flush()
 
                 if test_indxs is not None:
+                    # FIXME: Assuming 'data_as_var' and `test_indxs` being small enough to fit in one batch
+                    if self.data_pipe_type == 'data_as_var':
+                        feed_dict = {self.indices: test_indxs}
+                    else:
+                        raise NotImplementedError("Other data pipelines are not yet implemented for test_indxs")
                     if opt_params['run_diagnostics']:
                         summary = sess.run(
                             self.merge_summaries,

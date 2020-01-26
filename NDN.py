@@ -7,7 +7,6 @@ from copy import deepcopy
 import os
 import warnings
 import shutil
-import math
 
 import numpy as np
 import tensorflow as tf
@@ -329,8 +328,10 @@ class NDN(object):
 
             # add additional ops
             # for saving and restoring models (initialized after var creation)
+            # To use once backward compat is possible: self.saver = tf.compat.v1.train.Saver()
             self.saver = tf.train.Saver()
             # collect all summaries into a single op
+            # Not backward-compatible: self.merge_summaries = tf.compat.v1.summary.merge_all()
             self.merge_summaries = tf.summary.merge_all()
             # add variable initialization op to graph
             self.init = tf.global_variables_initializer()
@@ -424,6 +425,10 @@ class NDN(object):
         tf.summary.scalar('cost', self.cost)
         tf.summary.scalar('cost_penalized', self.cost_penalized)
         tf.summary.scalar('reg_pen', self.cost_reg)
+        # For future: these are not backwards-compatible, but will replace the above
+        # tf.compat.v1.summary.scalar('cost', self.cost)
+        # tf.compat.v1.summary.scalar('cost_penalized', self.cost_penalized)
+        # tf.compat.v1.summary.scalar('reg_pen', self.cost_reg)
     # END NDN._define_loss
 
     def _assign_model_params(self, sess):
@@ -637,7 +642,7 @@ class NDN(object):
                 test_indxs=data_indxs,
                 test_batch_size=self.batch_size)
 
-            #num_batches_tr = math.ceil(data_indxs.shape[0] / self.batch_size)
+            #num_batches_tr = data_indxs.shape[0] // self.batch_size
             #cost_tr = 0
             #for batch_tr in range(num_batches_tr):
             #    batch_indxs_tr = data_indxs[
@@ -734,7 +739,9 @@ class NDN(object):
             if blocks is None:
                 if self.batch_size is not None:
                     batch_size = self.batch_size
-                    num_batches_test = math.ceil(data_indxs.shape[0] / batch_size)
+                    if batch_size > data_indxs.shape[0]:
+                        batch_size = data_indxs.shape[0]
+                    num_batches_test = data_indxs.shape[0] // batch_size
                 else:
                     num_batches_test = 1
                     batch_size = data_indxs.shape[0]
@@ -838,7 +845,8 @@ class NDN(object):
             batch_size_save = None
 
         # Get prediction for complete range
-        num_batches_test = math.ceil(data_indxs.shape[0] / self.batch_size)
+        #num_batches_test = data_indxs.shape[0] // self.batch_size
+        num_batches_test = np.ceil(data_indxs.shape[0]/self.batch_size).astype(int)
 
         # Place graph operations on CPU
         if not use_gpu:
@@ -1163,6 +1171,7 @@ class NDN(object):
         """
 
         if learning_alg == 'adam':
+            # self.train_step = tf.compat.v1.train.AdamOptimizer(  # not backwards compatible
             self.train_step = tf.train.AdamOptimizer(
                 learning_rate=opt_params['learning_rate'],
                 beta1=opt_params['beta1'],
@@ -1283,8 +1292,9 @@ class NDN(object):
             if data_filters is None:  # produce data-filters for incorporating gaps
                 data_filters = [np.ones(output_data[0].shape, dtype='float32')]
             self.filter_data = True
+
             block_lists, data_filters, batch_comb = process_blocks(
-                blocks, data_filters, opt_params['batch_size'], self.time_spread)
+                    blocks, data_filters, opt_params['batch_size'], skip=self.time_spread)
 
         # build datasets if using 'iterator' pipeline
         if self.data_pipe_type is 'iterator':
@@ -1342,7 +1352,9 @@ class NDN(object):
                     output_dir, 'summaries', 'train')
                 if os.path.isdir(summary_dir_train):
                     tf.gfile.DeleteRecursively(summary_dir_train)
+                    #tf.io.gfile.rmtree(summary_dir_train)  # not backwards compatible
                 os.makedirs(summary_dir_train)
+                #train_writer = tf.compat.v1.summary.FileWriter(  # backward-compatible
                 train_writer = tf.summary.FileWriter(
                     summary_dir_train, graph=sess.graph)
 
@@ -1353,6 +1365,7 @@ class NDN(object):
                     if os.path.isdir(summary_dir_test):
                         tf.gfile.DeleteRecursively(summary_dir_test)
                     os.makedirs(summary_dir_test)
+                    #test_writer = tf.compat.v1.summary.FileWriter(   # not backwards compatible
                     test_writer = tf.summary.FileWriter(
                         summary_dir_test, graph=sess.graph)
 
@@ -1496,7 +1509,7 @@ class NDN(object):
         if early_stop_mode > 0:
             prev_costs = np.multiply(np.ones(opt_params['early_stop']), float('NaN'))
 
-        num_batches_tr = math.ceil(train_indxs.shape[0] / opt_params['batch_size'])
+        num_batches_tr = train_indxs.shape[0] // opt_params['batch_size']
 
         if opt_params['run_diagnostics']:
             run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
@@ -1525,7 +1538,7 @@ class NDN(object):
 
         if self.time_spread is not None:
             # get number of batches and their order for train indxs
-            num_batches_tr = math.ceil(train_indxs.shape[0] / self.batch_size)
+            num_batches_tr = train_indxs.shape[0] // self.batch_size
             batch_order = np.arange(num_batches_tr)
 
         # start training loop
@@ -1760,7 +1773,7 @@ class NDN(object):
         """Utility function to clean up code in `_train_adam` method"""
 
         if test_batch_size is not None:
-            num_batches_test = math.ceil(test_indxs.shape[0] / test_batch_size)
+            num_batches_test = test_indxs.shape[0] // test_batch_size
             cost_test = 0
             for batch_test in range(num_batches_test):
                 batch_indxs_test = test_indxs[batch_test * test_batch_size:
@@ -1855,7 +1868,7 @@ class NDN(object):
         if early_stop_mode > 0:
             prev_costs = np.multiply(np.ones(opt_params['early_stop']), float('NaN'))
 
-        #num_batches_tr = math.ceil(train_indxs.shape[0] / opt_params)
+        #num_batches_tr = train_indxs.shape[0] // opt_params
         if data_filters is None:  # then make basic data_filters
             df = []
             for nn in range(len(output_data)):
@@ -1896,7 +1909,7 @@ class NDN(object):
 
         # if self.time_spread is not None:
         # get number of batches and their order for train indxs
-        #   num_batches_tr = math.ceil(train_indxs.shape[0] / self.batch_size)
+        #   num_batches_tr = train_indxs.shape[0] // self.batch_size
         batch_order = np.arange(num_batches_tr)
 
         # start training loop
@@ -2039,6 +2052,7 @@ class NDN(object):
                 train_writer.flush()
 
                 if test_blocks is not None:
+                    # FIXME: test_blocks / test_indxs are actually not used -> broken
                     if opt_params['run_diagnostics']:
                         summary = sess.run(
                             self.merge_summaries,
@@ -2350,12 +2364,12 @@ class NDN(object):
         if type(input_data) is not list:
             input_data = [input_data]
         self.num_examples = input_data[0].shape[0]
+        num_outputs = len(self.ffnet_out)
 
         if output_data is not None:
             if type(output_data) is not list:
                 output_data = [output_data]
         else:  # generate dummy data
-            num_outputs = len(self.ffnet_out)
             output_data = [None] * num_outputs
             for nn in range(num_outputs):
                 output_data[nn] = np.zeros(
@@ -2371,6 +2385,10 @@ class NDN(object):
             if self.filter_data:
                 self.filter_data = False
                 print('WARNING: not using data-filter despite previously using.')
+            # Make dummy data-filters to be consistent with future operations
+            data_filters = [None]*num_outputs
+            for nn in range(num_outputs):
+                data_filters[nn] = np.ones(output_data[nn].shape, dtype='float32')
 
         for temp_data in input_data:
             if temp_data.shape[0] != self.num_examples:

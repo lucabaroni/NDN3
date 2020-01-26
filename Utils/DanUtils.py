@@ -10,69 +10,6 @@ from copy import deepcopy
 from sklearn.preprocessing import normalize as sk_normalize
 
 
-def reg_path(
-        ndn_mod=None,
-        input_data=None,
-        output_data=None,
-        train_indxs=None,
-        test_indxs=None,
-        blocks=None,
-        reg_type='l1',
-        reg_vals=[1e-6, 1e-4, 1e-3, 1e-2, 0.1, 1],
-        ffnet_target=0,
-        layer_target=0,
-        data_filters=None,
-        opt_params=None,
-        fit_variables=None,
-        output_dir=None,
-        silent=True):
-
-    """perform regularization over reg_vals to determine optimal cross-validated loss
-
-        Args:
-
-        Returns:
-            dict: params to initialize an `FFNetwork` object
-
-        Raises:
-            TypeError: If `layer_sizes` is not specified
-    """
-
-    if ndn_mod is None:
-        raise TypeError('Must specify NDN to regularize.')
-    if input_data is None:
-        raise TypeError('Must specify input_data.')
-    if output_data is None:
-        raise TypeError('Must specify output_data.')
-    if train_indxs is None:
-        raise TypeError('Must specify training indices.')
-    if test_indxs is None:
-        raise TypeError('Must specify testing indices.')
-
-    num_regs = len(reg_vals)
-
-    LLxs = np.zeros([num_regs],dtype='float32')
-    test_mods = []
-
-    for nn in range(num_regs):
-        if not silent:
-            print('\nRegularization test: %s = %s:\n' % (reg_type, str(reg_vals[nn])))
-        test_mod = ndn_mod.copy_model()
-        test_mod.set_regularization(reg_type, reg_vals[nn], ffnet_target, layer_target)
-        test_mod.train(input_data=input_data, output_data=output_data, silent=silent,
-                       train_indxs=train_indxs, test_indxs=test_indxs, blocks=blocks,
-                       data_filters=data_filters, fit_variables=fit_variables,
-                       learning_alg='adam', opt_params=opt_params, output_dir=output_dir)
-        LLxs[nn] = np.mean(
-            test_mod.eval_models(input_data=input_data, output_data=output_data, blocks=blocks,
-                                 data_indxs=test_indxs, data_filters=data_filters))
-        test_mods.append(test_mod.copy_model())
-        print('%s (%s = %s): %s' % (nn, reg_type, reg_vals[nn], LLxs[nn]))
-
-    return LLxs, test_mods
-# END reg_path
-
-
 def safe_generate_predictions(
         ndn_model=None,
         input_data=None,
@@ -201,45 +138,51 @@ def spatial_spread(filters, axis=0):
 # END spatial_spread
 
 
-def tbasis_recover_filters(ndn_mod):
+def tbasis_recover_filters(ndn_mod, ffnet=None):
 
-    assert np.prod(ndn_mod.networks[0].layers[0].filter_dims[1:]) == 1, 'only works with temporal-only basis'
+    if ffnet is None:
+        ffnet = 0
 
-    tkerns = ndn_mod.networks[0].layers[0].weights
+    assert np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1, 'only works with temporal-only basis'
+
+    tkerns = ndn_mod.networks[ffnet].layers[0].weights
     num_lags, num_tkerns = tkerns.shape
-    if len(ndn_mod.networks[0].layers) == 1:
-        non_lag_dims = np.prod(ndn_mod.networks[1].layers[0].filter_dims) // num_tkerns
-        num_filts = ndn_mod.networks[1].layers[0].weights.shape[1]
-        ws = np.reshape(ndn_mod.networks[1].layers[0].weights, [non_lag_dims, num_tkerns, num_filts])
+    if len(ndn_mod.networks[ffnet].layers) == 1:
+        non_lag_dims = np.prod(ndn_mod.networks[ffnet+1].layers[0].filter_dims) // num_tkerns
+        num_filts = ndn_mod.networks[ffnet+1].layers[0].weights.shape[1]
+        ws = np.reshape(ndn_mod.networks[ffnet+1].layers[0].weights, [non_lag_dims, num_tkerns, num_filts])
     else:
-        non_lag_dims = np.prod(ndn_mod.networks[0].layers[1].filter_dims) // num_tkerns
-        num_filts = ndn_mod.networks[0].layers[1].weights.shape[1]
-        ws = np.reshape(ndn_mod.networks[0].layers[1].weights, [non_lag_dims, num_tkerns, num_filts])
+        non_lag_dims = np.prod(ndn_mod.networks[ffnet].layers[1].filter_dims) // num_tkerns
+        num_filts = ndn_mod.networks[ffnet].layers[1].weights.shape[1]
+        ws = np.reshape(ndn_mod.networks[ffnet].layers[1].weights, [non_lag_dims, num_tkerns, num_filts])
     # num_lags = ndn_mod.networks[0].layers[0].num_lags
-    ks = np.reshape(np.matmul( tkerns, ws), [non_lag_dims*num_lags, num_filts])
+    ks = np.reshape(np.matmul(tkerns, ws), [non_lag_dims*num_lags, num_filts])
     # ks = np.zeros([non_lag_dims*num_lags, num_filts])
 
     return ks
 
 
-def compute_spatiotemporal_filters(ndn_mod):
+def compute_spatiotemporal_filters(ndn_mod, ffnet=None):
+
+    if ffnet is None:
+        ffnet = 0
 
     # Check to see if there is a temporal layer first
-    num_lags = ndn_mod.networks[0].layers[0].num_lags
-    if num_lags == 1 and ndn_mod.networks[0].layers[0].filter_dims[0] > 1:
-        num_lags = ndn_mod.networks[0].layers[0].filter_dims[0]
-    if np.prod(ndn_mod.networks[0].layers[0].filter_dims[1:]) == 1:  # then likely temporal basis
-        ks_flat = tbasis_recover_filters(ndn_mod)
-        if len(ndn_mod.networks[0].layers) > 1:
-            sp_dims = ndn_mod.networks[0].layers[1].filter_dims[1:]
-            other_dims = ndn_mod.networks[0].layers[1].filter_dims[0] // ndn_mod.networks[0].layers[0].num_filters
+    num_lags = ndn_mod.networks[ffnet].layers[0].num_lags
+    if num_lags == 1 and ndn_mod.networks[ffnet].layers[0].filter_dims[0] > 1:
+        num_lags = ndn_mod.networks[ffnet].layers[0].filter_dims[0]
+    if np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1:  # then likely temporal basis
+        ks_flat = tbasis_recover_filters(ndn_mod, ffnet=ffnet)
+        if len(ndn_mod.networks[ffnet].layers) > 1:
+            sp_dims = ndn_mod.networks[ffnet].layers[1].filter_dims[1:]
+            other_dims = ndn_mod.networks[ffnet].layers[1].filter_dims[0] // ndn_mod.networks[0].layers[0].num_filters
         else:
-            sp_dims = ndn_mod.networks[1].layers[0].filter_dims[1:]
-            other_dims = ndn_mod.networks[1].layers[0].filter_dims[0] // ndn_mod.networks[0].layers[0].num_filters
+            sp_dims = ndn_mod.networks[ffnet+1].layers[0].filter_dims[1:]
+            other_dims = ndn_mod.networks[ffnet+1].layers[0].filter_dims[0] // ndn_mod.networks[0].layers[0].num_filters
     else:
-        ks_flat = ndn_mod.networks[0].layers[0].weights
-        sp_dims = ndn_mod.networks[0].layers[0].filter_dims[1:3]
-        other_dims = ndn_mod.networks[0].layers[0].filter_dims[0] // num_lags
+        ks_flat = ndn_mod.networks[ffnet].layers[0].weights
+        sp_dims = ndn_mod.networks[ffnet].layers[0].filter_dims[1:3]
+        other_dims = ndn_mod.networks[ffnet].layers[0].filter_dims[0] // num_lags
     num_filters = ks_flat.shape[-1]
 
     # Reshape filters with other_dims tucked into first spatial dimension (on outside)
@@ -256,22 +199,33 @@ def compute_spatiotemporal_filters(ndn_mod):
 # END compute_spatiotemporal_filters
 
 
-def plot_filters(ndn_mod=None, filters=None, filter_dims=None, tbasis_select=-1, flipxy=False):
+def plot_filters(ndn_mod=None, filters=None, filter_dims=None, tbasis_select=-1, flipxy=False, ffnet=None, cmap=None):
     """Throw in NDN_mod to do defaults. Can also through in ks directly, but must be either 2-d (weights x filter)
     with filter_dims provided, or 3-d (num_lags, num_space, num_filt)"""
 
-    ks = filters
+    if ffnet is None:
+        ffnet = 0
+    # Set colormap
+    if cmap is None or cmap == 0:
+        cmap = 'Greys'
+    elif cmap == 1:
+        cmap = 'bwr'
+    elif cmap == 2:
+        cmap = 'RdBu_r'
+    # otherwise cmap must be string that works...
+
     temporal_basis_present = False
     if ndn_mod is None:
-        assert ks is not None, 'Must supply filters or ndn_mod'
-        num_filters = ks.shape[-1]
+        assert filters is not None, 'Must supply filters or ndn_mod'
+        num_filters = filters.shape[-1]
         if filter_dims is not None:
-            ks = np.reshape(filter_dims[1], filter_dims[0], num_filters)
+            ks = np.reshape(filters, [filter_dims[1], filter_dims[0], num_filters])
         else:
-            assert len(ks.shape) == 3, 'filter dims must be provided or ks must be reshaped into 3d'
+            assert len(filters.shape) == 3, 'filter dims must be provided or ks must be reshaped into 3d'
+            ks = filters
     else:
-        ks = compute_spatiotemporal_filters(ndn_mod=ndn_mod)
-        if np.prod(ndn_mod.networks[0].layers[0].filter_dims[1:]) == 1:
+        ks = compute_spatiotemporal_filters(ndn_mod=ndn_mod, ffnet=ffnet)
+        if np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1:
             temporal_basis_present = True
 
     if len(ks.shape) > 3:
@@ -288,7 +242,7 @@ def plot_filters(ndn_mod=None, filters=None, filter_dims=None, tbasis_select=-1,
         num_filters = ks.shape[2]
 
     if temporal_basis_present:
-        plt.plot(ndn_mod.networks[0].layers[0].weights)
+        plt.plot(ndn_mod.networks[ffnet].layers[0].weights)
         plt.title('Temporal bases')
 
     if num_filters > 200:
@@ -316,13 +270,13 @@ def plot_filters(ndn_mod=None, filters=None, filter_dims=None, tbasis_select=-1,
     for nn in range(num_filters):
         ax = plt.subplot(rows, cols, nn + 1)
         if flipxy:
-            #k = np.reshape(ks[:, nn], [filter_width, num_lags])
             k = ks[:, :, nn]
         else:
-            #k = np.transpose(np.reshape(ks[:, nn], [filter_width, num_lags]))
             k = np.transpose(ks[:, :, nn])
-
-        plt.imshow(k, cmap='Greys', interpolation='none', vmin=-plt_scale, vmax=plt_scale, aspect='auto')
+        if k.shape[0] == k.shape[1]:
+            plt.imshow(k, cmap=cmap, interpolation='none', vmin=-plt_scale, vmax=plt_scale, aspect=1)
+        else:
+            plt.imshow(k, cmap=cmap, interpolation='none', vmin=-plt_scale, vmax=plt_scale, aspect='auto')
         ax.set_yticklabels([])
         ax.set_xticklabels([])
     plt.show()
@@ -1156,3 +1110,37 @@ def ffnet_health(ndn_mod, toplot=True):
 
     return whealth, bhealth
 
+
+def gabor_sized(dim, angle, phase_select=0):
+    k = np.zeros([2 * dim + 1, 2 * dim + 1], dtype='float32')
+    a1, a2 = np.cos(angle * np.pi / 180), np.sin(angle * np.pi / 180)
+    sigma = dim / 2
+    omega = 1.5 * np.pi / dim
+    for xx in range(-dim, dim + 1):
+        for yy in range(-dim, dim + 1):
+            if phase_select == 0:
+                k[xx + dim, yy + dim] = np.cos(omega * (a1 * xx + a2 * yy)) * np.exp(
+                    -(xx * xx + yy * yy) / (2 * sigma * sigma))
+            else:
+                k[xx + dim, yy + dim] = np.sin(omega * (a1 * xx + a2 * yy)) * np.exp(
+                    -(xx * xx + yy * yy) / (2 * sigma * sigma))
+    return k
+
+
+def gabor_array(dim, num_angles=6, both_phases=False):
+    """Make array of Gabors, sized by gabor_sized (above), which preserves one full phase within a circular
+    aperture sized relative to dim. The length of a size is 2*dim+1, centered in the middle, so this returns
+    an array of gabors with dimensions (2*dim+1)^2 x num_angles. By default it only returnes cosine gabors, but
+    making both_phases=True gives double the Gabors, with the sines following cosines."""
+
+    if both_phases:
+        num_gabors = 2*num_angles
+    else:
+        num_gabors = num_angles
+    L = 2*dim+1
+    gabors = np.zeros([L*L, num_gabors], dtype='float32')
+    for nn in range(num_angles):
+        gabors[:, nn] = np.reshape(gabor_sized(dim, nn*180/num_angles, 0), [L*L])
+        if both_phases:
+            gabors[:, nn+num_angles] = np.reshape(gabor_sized(dim, nn*180/num_angles, 1), [L*L, 1])
+    return gabors

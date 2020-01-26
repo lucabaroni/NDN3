@@ -7,6 +7,7 @@ from copy import deepcopy
 import os
 import warnings
 import shutil
+import math
 
 import numpy as np
 import tensorflow as tf
@@ -642,7 +643,7 @@ class NDN(object):
                 test_indxs=data_indxs,
                 test_batch_size=self.batch_size)
 
-            #num_batches_tr = data_indxs.shape[0] // self.batch_size
+            #num_batches_tr = math.ceil(data_indxs.shape[0] / self.batch_size)
             #cost_tr = 0
             #for batch_tr in range(num_batches_tr):
             #    batch_indxs_tr = data_indxs[
@@ -739,9 +740,7 @@ class NDN(object):
             if blocks is None:
                 if self.batch_size is not None:
                     batch_size = self.batch_size
-                    if batch_size > data_indxs.shape[0]:
-                        batch_size = data_indxs.shape[0]
-                    num_batches_test = data_indxs.shape[0] // batch_size
+                    num_batches_test = math.ceil(data_indxs.shape[0] / batch_size)
                 else:
                     num_batches_test = 1
                     batch_size = data_indxs.shape[0]
@@ -845,8 +844,7 @@ class NDN(object):
             batch_size_save = None
 
         # Get prediction for complete range
-        #num_batches_test = data_indxs.shape[0] // self.batch_size
-        num_batches_test = np.ceil(data_indxs.shape[0]/self.batch_size).astype(int)
+        num_batches_test = math.ceil(data_indxs.shape[0] / self.batch_size)
 
         # Place graph operations on CPU
         if not use_gpu:
@@ -1509,7 +1507,7 @@ class NDN(object):
         if early_stop_mode > 0:
             prev_costs = np.multiply(np.ones(opt_params['early_stop']), float('NaN'))
 
-        num_batches_tr = train_indxs.shape[0] // opt_params['batch_size']
+        num_batches_tr = math.ceil(train_indxs.shape[0] / opt_params['batch_size'])
 
         if opt_params['run_diagnostics']:
             run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
@@ -1538,7 +1536,7 @@ class NDN(object):
 
         if self.time_spread is not None:
             # get number of batches and their order for train indxs
-            num_batches_tr = train_indxs.shape[0] // self.batch_size
+            num_batches_tr = math.ceil(train_indxs.shape[0] / self.batch_size)
             batch_order = np.arange(num_batches_tr)
 
         # start training loop
@@ -1773,7 +1771,7 @@ class NDN(object):
         """Utility function to clean up code in `_train_adam` method"""
 
         if test_batch_size is not None:
-            num_batches_test = test_indxs.shape[0] // test_batch_size
+            num_batches_test = math.ceil(test_indxs.shape[0] / test_batch_size)
             cost_test = 0
             for batch_test in range(num_batches_test):
                 batch_indxs_test = test_indxs[batch_test * test_batch_size:
@@ -1868,7 +1866,7 @@ class NDN(object):
         if early_stop_mode > 0:
             prev_costs = np.multiply(np.ones(opt_params['early_stop']), float('NaN'))
 
-        #num_batches_tr = train_indxs.shape[0] // opt_params
+        #num_batches_tr = math.ceil(train_indxs.shape[0] / opt_params)
         if data_filters is None:  # then make basic data_filters
             df = []
             for nn in range(len(output_data)):
@@ -1909,7 +1907,7 @@ class NDN(object):
 
         # if self.time_spread is not None:
         # get number of batches and their order for train indxs
-        #   num_batches_tr = train_indxs.shape[0] // self.batch_size
+        #   num_batches_tr = math.ceil(train_indxs.shape[0] / self.batch_size)
         batch_order = np.arange(num_batches_tr)
 
         # start training loop

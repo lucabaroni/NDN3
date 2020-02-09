@@ -360,7 +360,7 @@ class Layer(object):
         if self.normalize_weights > 0:
             w_pn = sk_normalize(w_p, axis=0)
         elif self.normalize_weights < 0:
-            w_pn = np.divide(w_p, np.maximum(np.square(np.sum(np.square(w_p), axis=0)), 1))
+            w_pn = np.divide(w_p, np.maximum(np.sqrt(np.sum(np.square(w_p), axis=0)), 1))
         else:
             w_pn = w_p
 
@@ -542,13 +542,13 @@ class ConvLayer(Layer):
             ws_conv = tf.reshape(w_pn, conv_filter_dims)
 
             # Make strides and dilation lists
-            strides, dilation = [1, 1], [1, 1]
-            if conv_filter_dims[0] > 1:
-                strides[0] = self.shift_spacing
-                dilation[0] = self.dilation
+            strides, dilation = [1, 1, 1, 1], [1, 1, 1, 1]
             if conv_filter_dims[1] > 1:
                 strides[1] = self.shift_spacing
                 dilation[1] = self.dilation
+            if conv_filter_dims[2] > 1:
+                strides[2] = self.shift_spacing
+                dilation[2] = self.dilation
 
             _pre = tf.nn.conv2d(shaped_input, ws_conv, strides=strides, dilations=dilation, padding='SAME')
             pre = tf.add(_pre, self.biases_var)

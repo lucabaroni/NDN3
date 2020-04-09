@@ -83,7 +83,7 @@ def filtered_eval_model(
     all_LLs = ndn_mod.eval_models(
         input_data=input_data, output_data=output_data,
         data_indxs=inds, data_filters=data_filters, nulladjusted=False)
-
+    
     # Need to cancel out and recalculate Poisson unit-norms, which might be based on
     # data_filtered firing rate (and not firing rate over inds)
     if (ndn_mod.noise_dist == 'poisson') and (ndn_mod.poisson_unit_norm is not None):
@@ -171,7 +171,8 @@ def compute_spatiotemporal_filters(ndn_mod, ffnet=None):
     num_lags = ndn_mod.networks[ffnet].layers[0].num_lags
     if num_lags == 1 and ndn_mod.networks[ffnet].layers[0].filter_dims[0] > 1:
         num_lags = ndn_mod.networks[ffnet].layers[0].filter_dims[0]
-    if np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1:  # then likely temporal basis
+    if (np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1) and \
+            (ndn_mod.network_list[ffnet]['layer_types'][0] != 'sep'):  # then likely temporal basis
         ks_flat = tbasis_recover_filters(ndn_mod, ffnet=ffnet)
         if len(ndn_mod.networks[ffnet].layers) > 1:
             sp_dims = ndn_mod.networks[ffnet].layers[1].filter_dims[1:]
@@ -180,9 +181,21 @@ def compute_spatiotemporal_filters(ndn_mod, ffnet=None):
             sp_dims = ndn_mod.networks[ffnet+1].layers[0].filter_dims[1:]
             other_dims = ndn_mod.networks[ffnet+1].layers[0].filter_dims[0] // ndn_mod.networks[0].layers[0].num_filters
     else:
-        ks_flat = ndn_mod.networks[ffnet].layers[0].weights
-        sp_dims = ndn_mod.networks[ffnet].layers[0].filter_dims[1:3]
-        other_dims = ndn_mod.networks[ffnet].layers[0].filter_dims[0] // num_lags
+        # Check if separable layer
+        n0 = ndn_mod.networks[ffnet].layers[0].input_dims[0] 
+        if ndn_mod.network_list[ffnet]['layer_types'][0] == 'sep':
+            NF = ndn_mod.networks[ffnet].layers[0].weights.shape[1]
+            kt = np.expand_dims(ndn_mod.networks[ffnet].layers[0].weights[range(n0), :].T, 1)
+            ksp = np.expand_dims(ndn_mod.networks[ffnet].layers[0].weights[n0:, :].T, 2)
+            ks_flat = np.reshape(deepcopy(ksp) @ deepcopy(kt), 
+                        [NF, np.prod(ndn_mod.networks[ffnet].layers[0].input_dims)]).T 
+            sp_dims = ndn_mod.networks[ffnet].layers[0].input_dims[1:3]
+            other_dims = n0 // num_lags
+ 
+        else: # not separable layer and no temporal basis: easiest ca
+            ks_flat = ndn_mod.networks[ffnet].layers[0].weights
+            sp_dims = ndn_mod.networks[ffnet].layers[0].filter_dims[1:3]
+            other_dims = n0 // num_lags
     num_filters = ks_flat.shape[-1]
 
     # Reshape filters with other_dims tucked into first spatial dimension (on outside)
@@ -225,7 +238,8 @@ def plot_filters(ndn_mod=None, filters=None, filter_dims=None, tbasis_select=-1,
             ks = filters
     else:
         ks = compute_spatiotemporal_filters(ndn_mod=ndn_mod, ffnet=ffnet)
-        if np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1:
+        if (np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1) and \
+                 (ndn_mod.network_list[ffnet]['layer_types'][0] != 'sep'):
             temporal_basis_present = True
 
     if len(ks.shape) > 3:
@@ -288,7 +302,7 @@ def plot_3dfilters(ndnmod=None, filters=None, dims=None, plot_power=False):
     if ndnmod is None:
         if dims is None:
             assert len(filters.shape) == 4, 'must include filter dims or reshape the input.'
-            dims = filters.shape[range(3)]
+            dims = filters.shape[:3]
             NK = filters.shape[-1]
             ks = np.reshape(deepcopy(filters), [np.prod(dims), NK])
         else:
@@ -1179,7 +1193,7 @@ def ffnet_health(ndn_mod, toplot=True):
 def gabor_sized(dim, angle, phase_select=0):
     k = np.zeros([2 * dim + 1, 2 * dim + 1], dtype='float32')
     a1, a2 = np.cos(angle * np.pi / 180), np.sin(angle * np.pi / 180)
-    sigma = dim / 2
+    sigma = dim / np.sqrt(6)
     omega = 1.5 * np.pi / dim
     for xx in range(-dim, dim + 1):
         for yy in range(-dim, dim + 1):
@@ -1198,14 +1212,17 @@ def gabor_array(dim, num_angles=6, both_phases=False):
     an array of gabors with dimensions (2*dim+1)^2 x num_angles. By default it only returnes cosine gabors, but
     making both_phases=True gives double the Gabors, with the sines following cosines."""
 
+    L = 2*dim+1
     if both_phases:
+        gabors = np.zeros([L*L, num_angles, 2], dtype='float32')
         num_gabors = 2*num_angles
     else:
         num_gabors = num_angles
-    L = 2*dim+1
-    gabors = np.zeros([L*L, num_gabors], dtype='float32')
+        gabors = np.zeros([L*L, num_angles, 1], dtype='float32')
+    #gabors = np.zeros([L*L, num_gabors], dtype='float32')
     for nn in range(num_angles):
-        gabors[:, nn] = np.reshape(gabor_sized(dim, nn*180/num_angles, 0), [L*L])
+        gabors[:, nn, 0] = np.reshape(gabor_sized(dim, nn*180/num_angles, 0), [L*L])
         if both_phases:
-            gabors[:, nn+num_angles] = np.reshape(gabor_sized(dim, nn*180/num_angles, 1), [L*L, 1])
-    return gabors
+            gabors[:, nn, 1] = np.reshape(gabor_sized(dim, nn*180/num_angles, 1), [L*L])
+    
+    return np.reshape(gabors, [L*L, num_gabors])

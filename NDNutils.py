@@ -264,12 +264,12 @@ def concatenate_input_dims(parent_input_size, added_input_size):
     cat_dims = expand_input_dims_to_3d(added_input_size)
 
     if parent_input_size is not None:
-        # Sum full vector along the second dimension (first spatial)
-        assert parent_input_size[0] == cat_dims[0], \
+        # Sum full vector along the first dimension ("filter" dimension)
+        assert parent_input_size[1] == cat_dims[1], \
             'First dimension of inputs do not agree.'
         assert parent_input_size[2] == cat_dims[2], \
             'Last dimension of inputs do not agree.'
-        cat_dims[1] += parent_input_size[1]
+        cat_dims[0] += parent_input_size[0]
 
     return cat_dims
 
@@ -512,6 +512,7 @@ def reg_path(
         data_filters=None,
         opt_params=None,
         fit_variables=None,
+        learning_alg = 'adam',
         output_dir=None,
         cumulative=False,
         silent=True):
@@ -553,11 +554,15 @@ def reg_path(
             test_mod = ndn_mod.copy_model()  # start from same base_model
         # otherwise will continue with same test model
 
-        test_mod.set_regularization(reg_type, reg_vals[nn], ffnet_target, layer_target)
+        if isinstance(layer_target, list):
+            for mm in range(len(layer_target)):
+                test_mod.set_regularization(reg_type, reg_vals[nn], ffnet_target, layer_target[mm])
+        else:
+            test_mod.set_regularization(reg_type, reg_vals[nn], ffnet_target, layer_target)
         test_mod.train(input_data=input_data, output_data=output_data, silent=silent,
                        train_indxs=train_indxs, test_indxs=test_indxs, blocks=blocks,
                        data_filters=data_filters, fit_variables=fit_variables,
-                       learning_alg='adam', opt_params=opt_params, output_dir=output_dir)
+                       learning_alg=learning_alg, opt_params=opt_params, output_dir=output_dir)
         LLxs[nn] = np.mean(
             test_mod.eval_models(input_data=input_data, output_data=output_data, blocks=blocks,
                                  data_indxs=test_indxs, data_filters=data_filters))
@@ -591,7 +596,7 @@ def generate_spike_history(robs, nlags, neg_constraint=True, reg_par=0,
 
 
 def process_blocks(block_inds, data_filters, batch_size=2000, skip=20):
-    """processes blocked-stimuli for train"""
+    """processes blocked-stimuli for train. Note that it assumes matlab indexing (starting with 1)"""
 
     if skip is None:
         print("WARNING: no time-spread entered for using blocks. Setting to 12.")
@@ -615,6 +620,19 @@ def process_blocks(block_inds, data_filters, batch_size=2000, skip=20):
         mod_df[nn] = data_filters[nn]*np.expand_dims(val_inds,1)
 
     return block_lists, mod_df, comb_number
+
+
+def make_block_indices( block_lims, lag_skip=0):
+    """return all the indices within the blocks passed. Similar to function above: perhaps
+    could be combined in the future if above could process things less complicated."""
+
+    block_inds = np.array([])
+    for nn in range(block_lims.shape[0]):
+        if block_lims[nn,0]-1+lag_skip < block_lims[nn,1]:
+            block_inds = np.concatenate((block_inds, np.array(
+                range(block_lims[nn,0]-1+lag_skip, block_lims[nn,1]))), axis=0)
+    return block_inds.astype(int)
+
 
 
 def generate_xv_folds(nt, fold=5, num_blocks=3):
@@ -713,9 +731,13 @@ def pick_gpu_lowest_memory():
     return best_gpu
 
 
-def setup_one_gpu():
+def setup_one_gpu(gpu_choice=None):
     assert not 'tensorflow' in sys.modules, "GPU setup must happen before importing TensorFlow"
-    gpu_id = pick_gpu_lowest_memory()
+    if gpu_choice is None:
+        print('\n---> setting up GPU with largest available memory:')
+        gpu_id = pick_gpu_lowest_memory()
+    else:
+        gpu_id = gpu_choice
     print("   ...picking GPU # " + str(gpu_id))
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -727,15 +749,15 @@ def setup_no_gpu():
     os.environ["CUDA_VISIBLE_DEVICES"] = ''
 
 
-def assign_gpu():
+def assign_gpu(gpu_choice=None):
     print('*******************************************************************************************')
 
     print('---> getting list of available GPUs:')
     print(list_available_gpus())
     print('\n---> getting GPU memory map:')
     print(gpu_memory_map())
-    print('\n---> setting up GPU with largest available memory:')
-    setup_one_gpu()
+        
+    setup_one_gpu(gpu_choice=gpu_choice)
 
     print('*******************************************************************************************')
 

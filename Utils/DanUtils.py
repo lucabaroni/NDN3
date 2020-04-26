@@ -18,8 +18,13 @@ def tbasis_recover_filters(ndn_mod, ffnet=None):
 
     assert np.prod(ndn_mod.networks[ffnet].layers[0].filter_dims[1:]) == 1, 'only works with temporal-only basis'
 
-    tkerns = ndn_mod.networks[ffnet].layers[0].weights
+    if ndn_mod.networks[0].layers[0].filter_basis is None:
+        tkerns = ndn_mod.networks[ffnet].layers[0].weights
+    else:
+        tkerns = ndn_mod.networks[ffnet].layers[0].filter_basis@ndn_mod.networks[ffnet].layers[0].weights
+    
     num_lags, num_tkerns = tkerns.shape
+    
     if len(ndn_mod.networks[ffnet].layers) == 1:
         non_lag_dims = np.prod(ndn_mod.networks[ffnet+1].layers[0].filter_dims) // num_tkerns
         num_filts = ndn_mod.networks[ffnet+1].layers[0].weights.shape[1]
@@ -129,7 +134,11 @@ def plot_filters(ndn_mod=None, filters=None, filter_dims=None, tbasis_select=-1,
         num_filters = ks.shape[2]
 
     if temporal_basis_present:
-        plt.plot(ndn_mod.networks[ffnet].layers[0].weights)
+        if ndn_mod.networks[0].layers[0].filter_basis is None:
+            tkerns = ndn_mod.networks[ffnet].layers[0].weights
+        else:
+            tkerns = ndn_mod.networks[ffnet].layers[0].filter_basis@ndn_mod.networks[ffnet].layers[0].weights
+        plt.plot(tkerns)
         plt.title('Temporal bases')
 
     if num_filters > 200:
@@ -179,7 +188,7 @@ def plot_3dfilters(ndnmod=None, filters=None, dims=None, plot_power=False):
             NK = filters.shape[-1]
             ks = np.reshape(deepcopy(filters), [np.prod(dims), NK])
         else:
-            NK = ks.shape[-1]
+            NK = filters.shape[-1]
             ks = np.reshape(deepcopy(filters), [np.prod(dims), NK])
     else:
         filters = compute_spatiotemporal_filters(ndnmod)

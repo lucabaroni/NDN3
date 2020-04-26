@@ -652,7 +652,8 @@ def generate_xv_folds(nt, fold=5, num_blocks=3):
         start_ind = start_ind + NTblock
 
     test_inds = np.array(test_inds, dtype='int')
-    train_inds = np.array(list(set(range(0, nt)) - set(test_inds)), dtype='int')  # Better way to setdiff?
+    train_inds = np.setdiff1d(np.arange(0, nt, 1), test_inds)
+    # train_inds = np.array(list(set(range(0, nt)) - set(test_inds)), dtype='int')  # Better way to setdiff?
 
     return train_inds, test_inds
 
@@ -678,8 +679,50 @@ def spikes_to_robs(spks, num_time_pts, dt):
     return robs
 
 
-# GPU picking
+def tent_basis_generate( xs=None, num_params=None, doubling_time=None, init_spacing=1 ):
+    """Computes tent-bases over the range of 'xs', with center points at each value of 'xs'
+    Alternatively (if xs=None), will generate a list with init_space and doubling_time up to
+    the total number of parameters. Must specify xs OR num_params. 
+    
+    Defaults:
+        doubling_time = num_params
+        init_space = 1"""
 
+    # Determine anchor-points
+    if xs is not None:
+        tbx = np.array(xs,dtype='int32')-xs[0]  # Make sure starts at 0 and of correct format
+        if num_params is not None: 
+            print( 'Warning: will only use xs input -- num_params is ignored.' )
+    else:
+        assert num_params is not None, 'Need to specify either xs or num_params'
+        if doubling_time is None:
+            doubling_time = num_params+1  # never doubles
+        tbx = np.zeros( num_params, dtype='int32' )
+        cur_loc, cur_spacing, sp_count = 0, init_spacing, 0
+        for nn in range(num_params):
+            tbx[nn] = cur_loc
+            cur_loc += cur_spacing
+            sp_count += 1
+            if sp_count == doubling_time:
+                sp_count = 0
+                cur_spacing *= 2
+
+    # Generate tent-basis given anchor points
+    NB = len(tbx)
+    NX = (np.max(tbx)+1).astype(int)
+    tent_basis = np.zeros([NX,NB], dtype='float32')
+    for nn in range(NB):
+        if nn > 0:
+            dx = tbx[nn]-tbx[nn-1]
+            tent_basis[range(tbx[nn-1], tbx[nn]+1), nn] = np.array(list(range(dx+1)))/dx
+        if nn < NB-1:
+            dx = tbx[nn+1]-tbx[nn]
+            tent_basis[range(tbx[nn], tbx[nn+1]+1), nn] = 1-np.array(list(range(dx+1)))/dx
+
+    return tent_basis
+
+
+######## GPU picking ########
 import subprocess, re, os, sys
 
 def run_command(cmd):

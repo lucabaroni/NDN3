@@ -370,8 +370,28 @@ class FFNetwork(object):
                 # Cancel time-expansion because handled internally
                 self.time_expand[nn] = 0
                 # Modify output size to take into account shifts
-                if nn < self.num_layers:
-                    layer_sizes[nn+1] = self.layers[nn].output_dims
+                #if nn < self.num_layers:
+                #    layer_sizes[nn+1] = self.layers[nn].output_dims
+
+            elif self.layer_types[nn] == 'sp_temporal':
+                
+                self.layers.append(TLayerSpecific(
+                    scope='sp_temporal_layer_%i' % nn,
+                    num_lags=self.time_expand[nn],
+                    input_dims=layer_sizes[nn],
+                    num_filters=layer_sizes[nn + 1],
+                    dilation=network_params['dilation'][nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    normalize_weights=network_params['normalize_weights'][nn],
+                    weights_initializer=network_params['weights_initializers'][nn],
+                    biases_initializer=network_params['biases_initializers'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    num_inh=network_params['num_inh'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
+
+                # Cancel time-expansion because handled internally
+                self.time_expand[nn] = 0
 
             elif self.layer_types[nn] == 'conv_readout':
 
@@ -501,7 +521,7 @@ class FFNetwork(object):
                         conv_filter_size[2] = network_params['conv_filter_widths'][nn]
 
                 self.layers.append(BiConvLayer(
-                    scope='conv_layer_%i' % nn,
+                    scope='biconv_layer_%i' % nn,
                     input_dims=layer_sizes[nn],
                     num_filters=layer_sizes[nn+1],
                     filter_dims=conv_filter_size,
@@ -591,6 +611,13 @@ class FFNetwork(object):
         for layer in range(self.num_layers):
             self.layers[layer].write_layer_params(sess)
 
+    def copy_ffnetwork_params(self, origin_network):
+        """Copy ffnetwork parameters over to new network (which is self in this case). 
+        Only should be called by NDN.copy_model(), and assumes copy of ffnetwork has same number of layers."""
+        self.input_masks = deepcopy(origin_network.input_masks)
+        for layer in range(self.num_layers):
+            self.layers[layer].copy_layer_params( origin_network.layers[layer])
+
     def assign_reg_vals(self, sess):
         """Update default tf Graph with new regularization penalties"""
         with tf.name_scope(self.scope):
@@ -608,6 +635,13 @@ class FFNetwork(object):
             # ...then sum over all layers
             reg_loss = tf.add_n(reg_ops)
         return reg_loss
+
+    def get_weights( self, layer_target, w_range=None, reshape=False ):
+        """Return a matrix with the desired weights from the NDN. Can select subset of weights using
+        w_range (default is return all), and can also reshape based on the filter dims (setting reshape=True).
+        """
+        assert layer_target < self.num_layers, 'layer_target exceeds number of layers.'
+        return self.layers[layer_target].get_weights( w_range=w_range, reshape=reshape)  
 
     @staticmethod
     def time_embed(inputs, batch_sz, num_lags):

@@ -14,6 +14,7 @@ import tensorflow as tf
 
 from .ffnetwork import FFNetwork
 from .ffnetwork import SideNetwork
+## will want to import network type here (SamplerNetwork?)
 from .NDNutils import concatenate_input_dims
 from .NDNutils import process_blocks
 from .NDNutils import make_block_indices
@@ -68,8 +69,8 @@ class NDN(object):
     _log_min = 1e-6  # constant to add to all arguments to logarithms
 
     _allowed_noise_dists = ['gaussian', 'poisson', 'bernoulli']
-    _allowed_network_types = ['normal', 'side']
-    _allowed_layer_types = ['normal', 'conv', 'sep', 'convsep', 'add', 'biconv', 'spike_history']
+    _allowed_network_types = ['normal', 'side', 'sampler']
+    _allowed_layer_types = ['normal', 'conv', 'sep', 'convsep', 'add', 'biconv', 'spike_history'] # there is now more
 
     def __init__(
             self,
@@ -184,7 +185,8 @@ class NDN(object):
                     # print('network %i:' % nn, mm, input_dims_measured, self.networks[mm].layers[-1].output_dims)
                     input_dims_measured = concatenate_input_dims(
                         input_dims_measured,
-                        self.networks[mm].layers[-1].output_dims)
+                        self.networks[mm].layers[-1].output_dims,
+                        network_type=self.network_list[nn]['network_type'])
 
             # Determine external inputs
             if self.network_list[nn]['xstim_n'] is not None:
@@ -220,6 +222,12 @@ class NDN(object):
                         scope='side_network_%i' % nn,
                         input_network_params=network_input_params,
                         params_dict=self.network_list[nn]))
+            elif self.network_list[nn]['network_type'] == 'sampler':
+                self.networks.append(
+                    SamplerNetwork(
+                        scope='sampler_network_%i' % nn,
+                        params_dict=self.network_list[nn]))
+
             else:
                 self.networks.append(
                     FFNetwork(
@@ -285,46 +293,61 @@ class NDN(object):
             # Build network graph
             for nn in range(self.num_networks):
 
-                if self.network_list[nn]['network_type'] == 'side':
+                if self.network_list[nn]['network_type'] == 'sampler':
+                    # Specialized inputs to sampler-network
+                    # [to be set in with any checks and call constructor defined in FFnetwork]
+                    conv_network_input = None  # This should point to the network that is sampled from
+                    sample_network = None  # This should point to the network that provides the samples
+                    # It in principle can also accept exernal inputs 
+                    # I think this will require a separated network input into the ffnetwork's build_graph
+                    # so have segrated the build_graph call here
+                    self.networks[nn].build_graph(
+                        conv_network_input, sample_network,
+                        params_dict=self.network_list[nn],
+                        batch_size=batch_size, use_dropout=use_dropout)
+                else:
 
-                    # Specialized inputs to side-network
-                    assert self.network_list[nn]['xstim_n'] is None, \
-                        'Cannot have any external inputs into side network.'
-                    assert len(self.network_list[nn]['ffnet_n']) == 1, \
-                        'Can only have one network input into a side network.'
-                    # Pass the entire network into the input of side network
-                    input_network_n = self.network_list[nn]['ffnet_n'][0]
-                    assert input_network_n < nn, \
-                        'Must create network for side network first.'
-                    input_cat = self.networks[input_network_n]
+                    if self.network_list[nn]['network_type'] == 'side':
 
-                else:   # assume normal network
-                    # Assemble input streams -- implicitly along input axis 1
-                    # (0 is T)
-                    input_cat = None
-                    if self.network_list[nn]['xstim_n'] is not None:
-                        for ii in self.network_list[nn]['xstim_n']:
-                            if input_cat is None:
-                                input_cat = self.data_in_batch[ii]
-                            else:
-                                input_cat = tf.concat(
-                                    (input_cat, self.data_in_batch[ii]),
-                                    axis=1)
-                    if self.network_list[nn]['ffnet_n'] is not None:
-                        for ii in self.network_list[nn]['ffnet_n']:
-                            if input_cat is None:
-                                input_cat = \
-                                    self.networks[ii].layers[-1].outputs
-                            else:
-                                input_cat = \
-                                    tf.concat(
-                                        (input_cat,
-                                         self.networks[ii].layers[-1].outputs),
+                        # Specialized inputs to side-network
+                        assert self.network_list[nn]['xstim_n'] is None, \
+                            'Cannot have any external inputs into side network.'
+                        assert len(self.network_list[nn]['ffnet_n']) == 1, \
+                            'Can only have one network input into a side network.'
+                        # Pass the entire network into the input of side network
+                        input_network_n = self.network_list[nn]['ffnet_n'][0]
+                        assert input_network_n < nn, \
+                            'Must create network for side network first.'
+                        input_cat = self.networks[input_network_n]
+
+                    else:   # assume normal network
+                        # Assemble input streams -- implicitly along input axis 1
+                        # (0 is T)
+                        input_cat = None
+                        if self.network_list[nn]['xstim_n'] is not None:
+                            for ii in self.network_list[nn]['xstim_n']:
+                                if input_cat is None:
+                                    input_cat = self.data_in_batch[ii]
+                                else:
+                                    input_cat = tf.concat(
+                                        (input_cat, self.data_in_batch[ii]),
                                         axis=1)
-                # first argument for T/FFnetworks is inputs but it is input_network for scaffold
-                # so no keyword argument used below
-                self.networks[nn].build_graph(input_cat, params_dict=self.network_list[nn],
-                                              batch_size=batch_size, use_dropout=use_dropout)
+                        if self.network_list[nn]['ffnet_n'] is not None:
+                            for ii in self.network_list[nn]['ffnet_n']:
+                                if input_cat is None:
+                                    input_cat = \
+                                        self.networks[ii].layers[-1].outputs
+                                else:
+                                    input_cat = \
+                                        tf.concat(
+                                            (input_cat,
+                                            self.networks[ii].layers[-1].outputs),
+                                            axis=1)
+
+                    # first argument for T/FFnetworks is inputs but it is input_network for scaffold
+                    # so no keyword argument used below
+                    self.networks[nn].build_graph(input_cat, params_dict=self.network_list[nn],
+                                                batch_size=batch_size, use_dropout=use_dropout)
 
             # Define loss function
             with tf.variable_scope('loss'):
@@ -386,7 +409,7 @@ class NDN(object):
                 data_out = tf.slice(self.data_out_batch[nn], [time_spread, 0], [-1, -1])
                 pred = tf.slice(pred_tmp, [time_spread, 0], [-1, -1])  # [self.batch_size-self.time_spread, -1])
                 # effective_batch_size is self.batch_size - self.time_spread
-            nt = tf.cast(tf.shape(pred)[0], tf.float32) - time_spread
+            nt = tf.cast(tf.shape(pred)[0], tf.float32)  # already sliced 
 
             # define cost function
             if self.noise_dist == 'gaussian':
@@ -1017,6 +1040,13 @@ class NDN(object):
 
         return reg_dict
 
+    def get_weights( self, layer_target, ffnet_target=0, w_range=None, reshape=False ):
+        """Return a matrix with the desired weights from the NDN. Can select subset of weights using
+        w_range (default is return all), and can also reshape based on the filter dims (setting reshape=True)."""
+
+        assert ffnet_target < len(self.networks), 'ffnet_target out of range.'
+        return self.networks[ffnet_target].get_weights( layer_target, w_range=w_range, reshape=reshape) 
+
     def copy_model(self, tf_seed=0):
         """Makes an exact copy of model without further elaboration."""
 
@@ -1031,16 +1061,7 @@ class NDN(object):
 
         # Copy all the parameters
         for nn in range(self.num_networks):
-            for ll in range(self.networks[nn].num_layers):
-                target.networks[nn].layers[ll].weights = \
-                    self.networks[nn].layers[ll ].weights.copy()
-                target.networks[nn].layers[ll].biases = \
-                    self.networks[nn].layers[ll].biases.copy()
-                target.networks[nn].layers[ll].reg = \
-                    self.networks[nn].layers[ll].reg.reg_copy()
-                target.networks[nn].layers[ll].normalize_weights = \
-                    self.networks[nn].layers[ll].normalize_weights
-            target.networks[nn].input_masks = deepcopy(self.networks[nn].input_masks)
+            target.networks[nn].copy_ffnetwork_params( self.networks[nn] )
         return target
 
     def matlab_export(self, filename):
@@ -2470,6 +2491,11 @@ class NDN(object):
         if type(input_data) is not list:
             input_data = [input_data]
         self.num_examples = input_data[0].shape[0]
+        # add dimensions to input data as needed
+        for nn in range(len(input_data)):
+            if len(input_data[nn].shape) == 1:
+                input_data[nn] = np.expand_dims(input_data[nn], 1)
+
         num_outputs = len(self.ffnet_out)
 
         if output_data is not None:
@@ -2507,7 +2533,6 @@ class NDN(object):
                 raise ValueError('Input data dims must match across input_data.')
         for nn, temp_data in enumerate(output_data):
             if temp_data.shape[0] != self.num_examples:
-                print('in', nn, temp_data.shape, self.num_examples)
                 raise ValueError('Output dim0 must match model values')
             if len(temp_data.shape) < 2:
                 output_data[nn] = np.expand_dims(temp_data, axis=1)
@@ -2534,7 +2559,8 @@ class NDN(object):
             if np.sum(self.network_list[nn]['time_expand']) > 0:
                 for ll in range(len(self.networks[nn].layers)):
                     if (self.network_list[nn]['time_expand'][ll] > 0) and \
-                            (self.network_list[nn]['layer_types'][ll] != 'temporal'):
+                            ((self.network_list[nn]['layer_types'][ll] != 'temporal') and \
+                                (self.network_list[nn]['layer_types'][ll] != 'sp_temporal')):
                         can_we = False
         return can_we
 

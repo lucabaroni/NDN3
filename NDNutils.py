@@ -244,7 +244,7 @@ def expand_input_dims_to_3d(input_size):
     return input3d
 
 
-def concatenate_input_dims(parent_input_size, added_input_size):
+def concatenate_input_dims(parent_input_size, added_input_size, network_type='normal'):
     """Utility function to concatenate two sets of input_dims vectors
     -- parent_input_size can be none, if added_input_size is first
     -- otherwise its assumed parent_input_size is already 3-d, but
@@ -261,22 +261,28 @@ def concatenate_input_dims(parent_input_size, added_input_size):
     
     """
 
-    cat_dims = expand_input_dims_to_3d(added_input_size)
 
-    if parent_input_size is not None:
-        # Sum full vector along the first dimension ("filter" dimension)
-        assert parent_input_size[1] == cat_dims[1], \
-            'First dimension of inputs do not agree.'
-        assert parent_input_size[2] == cat_dims[2], \
-            'Last dimension of inputs do not agree.'
-        cat_dims[0] += parent_input_size[0]
+    if network_type != 'sampler':
+        cat_dims = expand_input_dims_to_3d(added_input_size)
+
+        if parent_input_size is not None:
+            # Sum full vector along the first dimension ("filter" dimension)
+            assert parent_input_size[1] == cat_dims[1], \
+                'First dimension of inputs do not agree.'
+            assert parent_input_size[2] == cat_dims[2], \
+                'Last dimension of inputs do not agree.'
+            cat_dims[0] += parent_input_size[0]
+    else:
+        # How will sampler_network handle the different input type? I imagine it would work to just 
+        # ignore dim sizes of the sample_locations, which I'm writing in here as a default 
+        cat_dims = parent_input_size
 
     return cat_dims
 
 
 def shift_mat(m, sh, dim, zpad=True):
     """Modern version of shift_mat_zpad, good up to 4-dimensions, with z-pad as option"""
-    shm = np.roll(m.copy(), sh, dim)
+    shm = np.roll(deepcopy(m), sh, dim)
     if zpad:
         assert m.ndim < 5, 'Cannot do more than 4 dimensions.'
         L = m.shape[dim]
@@ -342,7 +348,7 @@ def shift_mat_zpad(x, shift, dim=0):
         xcopy = np.zeros([len(x), 1])
         xcopy[:, 0] = x
     else:
-        xcopy = x.copy()
+        xcopy = deepcopy(x)
         oneDarray = False
     sz = list(np.shape(xcopy))
 
@@ -416,11 +422,14 @@ def create_time_embedding(stim, pdims, up_fac=1, tent_spacing=1):
     # If there are two spatial dims, fold them into one
     if len(sz) > 2:
         stim = np.reshape(stim, (sz[0], np.prod(sz[1:])))
+        print('Flattening stimulus to produce design matrix.')
+    elif len(sz) == 1:
+        stim = np.expand_dims(stim, axis=1)
+    sz = list(np.shape(stim))
 
     # No support for more than two spatial dimensions
     if len(sz) > 3:
-        print('More than two spatial dimensions not supported, but creating' +
-              'xmatrix anyways...')
+        print('More than two spatial dimensions not supported, but creating xmatrix anyways...')
 
     # Check that the size of stim matches with the specified stim_params
     # structure
@@ -428,7 +437,7 @@ def create_time_embedding(stim, pdims, up_fac=1, tent_spacing=1):
         print('Stimulus dimension mismatch')
         raise ValueError
 
-    modstim = stim.copy()
+    modstim = deepcopy(stim)
     # Up-sample stimulus if required
     if up_fac > 1:
         # Repeats the stimulus along the time dimension
@@ -493,7 +502,7 @@ def create_NL_embedding(stim, bounds):
         else:
             tmp[b] = 1
         tmp = np.maximum(tmp, 0)
-        NLstim[:, :, nn] = tmp.copy()
+        NLstim[:, :, nn] = deepcopy(tmp)
     print("Generated NLstim: %d x %d x %d" % (NT, NF, NNL))
     return np.reshape(NLstim, [NT, NF*NNL])
 
@@ -615,7 +624,7 @@ def process_blocks(block_inds, data_filters, batch_size=2000, skip=20):
         av_size += np.max([block_inds[nn, 1] - block_inds[nn, 0] - skip+1, 0])
         block_lists.append(np.array(range(block_inds[nn, 0]-1, block_inds[nn, 1]), dtype='int'))
 
-    comb_number = np.round(batch_size/av_size*num_blocks).astype(int)
+    comb_number = np.maximum(np.round(batch_size/av_size*num_blocks).astype(int), 1)
     for nn in range(len(data_filters)):
         mod_df[nn] = data_filters[nn]*np.expand_dims(val_inds,1)
 
@@ -635,25 +644,38 @@ def make_block_indices( block_lims, lag_skip=0):
 
 
 
-def generate_xv_folds(nt, fold=5, num_blocks=3):
+def generate_xv_folds(nt, num_folds=5, num_blocks=3, which_fold=None):
     """Will generate unique and cross-validation indices, but subsample in each block
         NT = number of time steps
-        fold = fraction of data (1/fold) to set aside for cross-validation
+        num_folds = fraction of data (1/fold) to set aside for cross-validation
+        which_fold = which fraction of data to set aside for cross-validation (default: middle of each block)
         num_blocks = how many blocks to sample fold validation from"""
 
     test_inds = []
-    start_ind = 0
-    NTblock = np.floor(nt/num_blocks)
-    # Pick middle of block for XV
-    tstart = np.floor(NTblock * (np.floor(fold / 2) / fold))
-    XVlength = np.round(NTblock / fold)
-    for bl in range(num_blocks):
-        test_inds = test_inds + list(range(int(start_ind+tstart), int(start_ind+tstart+XVlength)))
-        start_ind = start_ind + NTblock
+    NTblock = np.floor(nt/num_blocks).astype(int)
+    block_sizes = np.zeros(num_blocks, dtype='int32')
+    block_sizes[range(num_blocks-1)] = NTblock
+    block_sizes[num_blocks-1] = nt-(num_blocks-1)*NTblock
+
+    if which_fold is None:
+        which_fold = num_folds//2
+    else:
+        assert which_fold < num_folds, 'Must choose XV fold within num_folds =' + str(num_folds)
+
+    # Pick XV indices for each block
+    cnt = 0
+    for bb in range(num_blocks):
+        tstart = np.floor(block_sizes[bb] * (which_fold / num_folds))
+        if which_fold < num_folds-1:
+            tstop = np.floor(block_sizes[bb] * ((which_fold+1) / num_folds))
+        else: 
+            tstop = block_sizes[bb]
+
+        test_inds = test_inds + list(range(int(cnt+tstart), int(cnt+tstop)))
+        cnt = cnt + block_sizes[bb]
 
     test_inds = np.array(test_inds, dtype='int')
     train_inds = np.setdiff1d(np.arange(0, nt, 1), test_inds)
-    # train_inds = np.array(list(set(range(0, nt)) - set(test_inds)), dtype='int')  # Better way to setdiff?
 
     return train_inds, test_inds
 
@@ -679,7 +701,7 @@ def spikes_to_robs(spks, num_time_pts, dt):
     return robs
 
 
-def tent_basis_generate( xs=None, num_params=None, doubling_time=None, init_spacing=1 ):
+def tent_basis_generate( xs=None, num_params=None, doubling_time=None, init_spacing=1, first_lag=0 ):
     """Computes tent-bases over the range of 'xs', with center points at each value of 'xs'
     Alternatively (if xs=None), will generate a list with init_space and doubling_time up to
     the total number of parameters. Must specify xs OR num_params. 
@@ -690,7 +712,7 @@ def tent_basis_generate( xs=None, num_params=None, doubling_time=None, init_spac
 
     # Determine anchor-points
     if xs is not None:
-        tbx = np.array(xs,dtype='int32')-xs[0]  # Make sure starts at 0 and of correct format
+        tbx = np.array(xs,dtype='int32')
         if num_params is not None: 
             print( 'Warning: will only use xs input -- num_params is ignored.' )
     else:
@@ -698,7 +720,7 @@ def tent_basis_generate( xs=None, num_params=None, doubling_time=None, init_spac
         if doubling_time is None:
             doubling_time = num_params+1  # never doubles
         tbx = np.zeros( num_params, dtype='int32' )
-        cur_loc, cur_spacing, sp_count = 0, init_spacing, 0
+        cur_loc, cur_spacing, sp_count = first_lag, init_spacing, 0
         for nn in range(num_params):
             tbx[nn] = cur_loc
             cur_loc += cur_spacing
@@ -715,6 +737,9 @@ def tent_basis_generate( xs=None, num_params=None, doubling_time=None, init_spac
         if nn > 0:
             dx = tbx[nn]-tbx[nn-1]
             tent_basis[range(tbx[nn-1], tbx[nn]+1), nn] = np.array(list(range(dx+1)))/dx
+        elif tbx[0] > 0:  # option to have function go to zero at beginning
+            dx = tbx[0]
+            tent_basis[range(tbx[nn]+1), nn] = np.array(list(range(dx+1)))/dx
         if nn < NB-1:
             dx = tbx[nn+1]-tbx[nn]
             tent_basis[range(tbx[nn], tbx[nn+1]+1), nn] = 1-np.array(list(range(dx+1)))/dx

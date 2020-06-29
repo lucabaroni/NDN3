@@ -176,7 +176,7 @@ class Layer(object):
             self.log = True
         else:
             self.log = False
-
+        
         # Set up layer regularization
         self.reg = Regularization(
             input_dims=filter_dims,
@@ -368,6 +368,16 @@ class Layer(object):
         self.biases = sess.run(self.biases_var)
     # END Layer.write_layer_params
 
+    def copy_layer_params(self, origin_layer):
+        """Copy layer parameters over to new layer (which is self in this case). 
+        Only should be called by NDN.copy_network_params()."""
+
+        self.weights = deepcopy(origin_layer.weights)
+        self.biases = deepcopy(origin_layer.biases)
+        self.weights = deepcopy(origin_layer.weights)
+        self.reg = origin_layer.reg.reg_copy()
+        self.normalize_weights = deepcopy(origin_layer.normalize_weights)
+
     def define_regularization_loss(self):
         """Wrapper function for building regularization portion of graph"""
         with tf.name_scope(self.scope):
@@ -396,6 +406,22 @@ class Layer(object):
     def get_reg_pen(self, sess):
         """Wrapper function for returning regularization penalty dict"""
         return self.reg.get_reg_penalty(sess)
+
+    def get_weights( self, w_range=None, reshape=False ):
+        """Return a matrix with the desired weights from the NDN. Can select subset of weights using
+        w_range (default is return all), and can also reshape based on the filter dims (setting reshape=True).
+        """
+        
+        if w_range is None:
+            w_range = np.arange(self.num_filters)
+        else:
+            assert np.max(w_range) < self.num_filters, 'w_range exceeds number of filters'
+    
+        ws = deepcopy(self.weights[:, w_range])
+        if reshape:
+            return np.reshape( ws, self.filter_dims + [len(w_range)])
+        else:
+            return ws
 
 
 class ConvLayer(Layer):
@@ -2066,16 +2092,15 @@ class MultLayer(Layer):
                 output_dims=num_outputs,
                 activation_func=activation_func,
                 normalize_weights=normalize_weights,
-                weights_initializer='zeros',
+                weights_initializer='normal',
                 biases_initializer='zeros',
                 reg_initializer=reg_initializer,
                 num_inh=num_inh,
                 pos_constraint=pos_constraint,
                 log_activations=log_activations)
 
-        # Initialize all weights to 1, which is the default combination
-        self.weights[:, :] = 1.0
-        self.biases[:] = 1e-8
+        # Initialize all weights to very small deviations about 0, which would have minimal mult power
+        self.weights[:, :] = 1.0 # default is multplication is transparent
 
     # END MultLayer.__init__
 
@@ -2084,30 +2109,32 @@ class MultLayer(Layer):
         the first dimension of input_dims, and each stream will have the same number of inputs
         as the number of output units."""
 
-        #num_input_streams = self.input_dims[0]
         num_outputs = self.output_dims[0]
-        # inputs will be NTx(num_input_streamsxnum_outputs)
+        # inputs will be NTx2
 
         with tf.name_scope(self.scope):
             self._define_layer_variables()
 
             if self.pos_constraint is not None:
-                w_p = tf.maximum(self.weights_var, 0.0)
+                if self.pos_constraint > 0:
+                    w_p = tf.maximum(self.weights_var, 0.0)
+                else:  
+                    w_p = tf.maximum(self.weights_var, tf.minimum(self.weights_var, 0.0), -1)
             else:
                 w_p = self.weights_var
 
-            if self.normalize_weights > 0:
-                w_pn = tf.nn.l2_normalize(w_p, axis=0)
-            else:
-                w_pn = w_p
+            multipliers = tf.maximum( tf.add(
+                tf.multiply( tf.slice( inputs, [0, num_outputs], [-1, num_outputs]), w_p),
+                1.0), 0.0)
 
-            #flattened_weights = tf.reshape(w_pn, [1, num_input_streams*num_outputs])
+            #if self.normalize_weights > 0:
+            #    w_pn = tf.nn.l2_normalize(w_p, axis=0)
+            #else:
+            #    w_pn = w_p
 
-            # reshape inputs and multiply
-            #mult_inputs = tf.reduce_prod(tf.reshape(inputs, [-1, 2, num_outputs]), axis=1)
-            input2 = tf.reshape(inputs, [-1, 2, num_outputs])
-            mult_inputs = tf.multiply( input2[:, 0, :], tf.add(input2[:, 1, :], 1.0))
-            pre = tf.add(tf.multiply(mult_inputs, w_pn), self.biases_var)
+            pre = tf.add(tf.multiply(
+                tf.slice( inputs, [0, 0], [-1, num_outputs]), 
+                multipliers), self.biases_var)
 
             if self.ei_mask_var is None:
                 post = self._apply_act_func(pre)
@@ -2125,21 +2152,24 @@ class MultLayer(Layer):
     def write_layer_params(self, sess):
         """Write weights/biases in tf Variables to numpy arrays"""
 
-        num_input_streams = self.input_dims[0]
-        num_outputs = self.output_dims[1]
+        #num_input_streams = self.input_dims[0]
+        #num_outputs = self.output_dims[1]
         _tmp_weights = sess.run(self.weights_var)
 
         if self.pos_constraint is not None:
-            w_p = np.maximum(_tmp_weights, 0.0)
+            if self.pos_constraint > 0:
+                w_p = np.maximum(_tmp_weights, 0.0)
+            else:
+                w_p = np.minimum(_tmp_weights, 0.0)
         else:
             w_p = _tmp_weights
 
-        if (self.normalize_weights > 0) and (num_input_streams != 1):
-            w_pn = sk_normalize(w_p, axis=0)
-        else:
-            w_pn = w_p
+        #if (self.normalize_weights > 0) and (num_input_streams != 1):
+        #    w_pn = sk_normalize(w_p, axis=0)
+        #else:
+        #    w_pn = w_p
 
-        self.weights = w_pn
+        self.weights = w_p
         self.biases = sess.run(self.biases_var)
     # END MultLayer.write_layer_params
 

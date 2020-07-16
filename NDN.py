@@ -37,7 +37,7 @@ class NDN(object):
             stream
         noise_dist (str): specifies the probability distribution used to define
             the cost function
-            ['poisson' | 'gaussian' | 'bernoulli']
+            ['poisson'] | 'gaussian' | 'bernoulli'
         tf_seed (int): rng seed for both tensorflow and numpy, which allows
             for reproducibly random initializations of parameters
         cost

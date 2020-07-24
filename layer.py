@@ -820,7 +820,7 @@ class LinScale(Layer):
             self,
             scope=None,
             input_dims=None,   # this can be a list up to 3-dimensions
-            activation_func='relu',
+            activation_func='identity',
             reg_initializer=None,
             pos_constraint=None,
             log_activations=False):
@@ -831,7 +831,7 @@ class LinScale(Layer):
             input_dims (int or list of ints): dimensions of input data
             activation_func (str, optional): pointwise function applied to  
                 output of affine transformation
-                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' | 
+                'relu' | 'sigmoid' | 'tanh' | ['identity'] | 'softplus' | 
                 'elu' | 'quad'
             reg_initializer (dict, optional): see Regularizer docs for info
             pos_constraint (None, valued): True to constrain layer weights to
@@ -889,11 +889,13 @@ class LinScale(Layer):
             _pre = tf.multiply(inputs, w_p)
             pre = tf.add(_pre, self.biases_var)
 
-            self.outputs = self._apply_dropout(pre, use_dropout=use_dropout,
-                                            noise_shape=[1, self.num_filters])
+            post = self._apply_act_func(pre)
+            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
+                                               noise_shape=[1, self.num_filters])
             
         if self.log:
             tf.summary.histogram('act_pre', pre)
+            tf.summary.histogram('act_post', post)
     # END LinScale.build_graph
 
 

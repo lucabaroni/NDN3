@@ -25,7 +25,8 @@ def ffnetwork_params(
         log_activations=False,
         conv_filter_widths=None,  # the below are for convolutional network
         shift_spacing=1,
-        dilation=1):
+        dilation=1,
+        roteq_params=None):  
     """generates information for the network_params dict that is passed to the
     NDN constructor.
     
@@ -192,7 +193,6 @@ def ffnetwork_params(
             conv_filter_widths.append(None)
     else:
         conv_filter_widths = [None]*num_layers
-
     network_params['conv_filter_widths'] = conv_filter_widths
 
     if shift_spacing is not None:
@@ -212,6 +212,16 @@ def ffnetwork_params(
     else:
         dilation = [1]*num_layers
     network_params['dilation'] = dilation
+
+    # if rot_eq
+    if roteq_params is not None:
+        if not isinstance(roteq_params, list):
+            roteq_params = [roteq_params]*num_layers
+        while len(roteq_params) < num_layers:
+            roteq_params.append(None)
+    else:
+        roteq_params = [None]*num_layers
+    network_params['roteq_params'] = roteq_params
 
     if verbose:
         if input_dims is not None:

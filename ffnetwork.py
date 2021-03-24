@@ -85,36 +85,36 @@ class FFNetwork(object):
             TypeError: If `scope` is not specified
             TypeError: If `params_dict` is not specified
             TypeError: If `layer_sizes` is not specified in `params_dict`
-            TypeError: If `input_dims` is `None` and is not contained in 
+            TypeError: If `input_dims` is `None` and is not contained in
                 `params_dict`
             TypeError: If 'layer_type` in `params_dict` is not a valid string
-            ValueError: If `activation_funcs` in `params_dict` is not a 
+            ValueError: If `activation_funcs` in `params_dict` is not a
                 properly-sized list
-            ValueError: If `weights_initializer` in `params_dict` is not a 
+            ValueError: If `weights_initializer` in `params_dict` is not a
                 properly-sized list
-            ValueError: If `biases_initializer` in `params_dict` is not a 
+            ValueError: If `biases_initializer` in `params_dict` is not a
                 properly-sized list
-            ValueError: If `biases_initializer` in `params_dict` is not a 
+            ValueError: If `biases_initializer` in `params_dict` is not a
                 properly-sized list
-            ValueError: If `num_inh` in `params_dict` is not a 
+            ValueError: If `num_inh` in `params_dict` is not a
                 properly-sized list
-            ValueError: If `pos_constraints` in `params_dict` is not a 
+            ValueError: If `pos_constraints` in `params_dict` is not a
                 properly-sized list
-                
+
         """
 
         # check for required inputs
         if scope is None:
-            raise TypeError('Must specify network scope')
+            raise TypeError("Must specify network scope")
         self.scope = scope
 
         if params_dict is None:
-            raise TypeError('Must specify parameters dictionary.')
+            raise TypeError("Must specify parameters dictionary.")
 
         if input_dims is None:
-            input_dims = params_dict['input_dims']
-            if params_dict['input_dims'] is None:
-                raise TypeError('Must specify input dimensions.')
+            input_dims = params_dict["input_dims"]
+            if params_dict["input_dims"] is None:
+                raise TypeError("Must specify input dimensions.")
         # Format input dims (or check formatting)
         if not isinstance(input_dims, list):
             input_dims = [1, input_dims, 1]
@@ -124,7 +124,7 @@ class FFNetwork(object):
         self.input_dims = input_dims[:]
 
         # Check information in params_dict and set defaults
-        if 'layer_sizes' not in params_dict:
+        if "layer_sizes" not in params_dict:
             raise TypeError('Must specify layer_sizes.')
 
         self.num_layers = len(params_dict['layer_sizes'])

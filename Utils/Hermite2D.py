@@ -135,7 +135,6 @@ def plot_k_rank_filters(X, Y, k, sigma=1):
     psi_list, _, _, _ = get_k_rank_filters(X, Y, k, sigma)
     l = len(psi_list)
     for i in range(l):
-        plt.contourf(X, Y, np.real(psi_list[i]), 100)
         plt.colorbar()
         plt.axis("square")
         plt.show()
@@ -146,3 +145,15 @@ def plot_up2k_rank_filters(X, Y, k, sigma=1):
     for i in range(k + 1):
         plot_k_rank_filters(X, Y, i, sigma)
     return
+
+
+# abs_boundaries = 9
+# size = 20
+# max_rank = 4
+# f = get_all_ori_base_filters(abs_boundaries, size, max_rank)
+# _, ax= plt.subplots(4, len(f[0]))
+
+# for ori in range(4):
+#     for i in range(len(f[0])):
+#         ax[ori, i].imshow(f[ori ,i], cmap='Greys_r')
+# plt.show()

@@ -4,13 +4,18 @@ from __future__ import print_function
 from __future__ import division
 
 import numpy as np
-import tensorflow as tf
-from .regularization import Regularization
-from .regularization import SepRegularization
-from .regularization import UnitRegularization
+import matplotlib.pyplot as plt
+
+import tensorflow.compat.v1 as tf
+from NDN3.regularization import Regularization
+from NDN3.regularization import SepRegularization
+from NDN3.regularization import UnitRegularization
 
 from copy import deepcopy
 from sklearn.preprocessing import normalize as sk_normalize
+
+# utils
+from NDN3.Utils import Hermite2D, SimpleFilters
 
 
 class Layer(object):
@@ -28,39 +33,40 @@ class Layer(object):
         biases_ph (tf placeholder): placeholder for biases in layer
         weights_var (tf Tensor): weights in layer
         biases_var (tf Tensor): biases in layer
-        weights (numpy array): shadow variable of `weights_var` that allows for 
+        weights (numpy array): shadow variable of `weights_var` that allows for
             easier manipulation outside of tf sessions
-        biases (numpy array): shadow variable of `biases_var` that allows for 
+        biases (numpy array): shadow variable of `biases_var` that allows for
             easier manipulation outside of tf sessions
         activation_func (tf activation function): activation function in layer
         reg (Regularization object): holds regularizations values and matrices
             (as tf constants) for layer
         ei_mask_var (tf constant): mask of +/-1s to multiply output of layer
-        ei_mask (list): mask of +/-1s to multiply output of layer; shadows 
+        ei_mask (list): mask of +/-1s to multiply output of layer; shadows
             `ei_mask_tf` for easier manipulation outside of tf sessions
         pos_constraint (None, valued): positivity constraint on weights in layer
         num_filters (int): equal to output_dims
         filter_dims (list of ints): equal to input_dims
-        normalize_weights (int): defines normalization type for weights in 
+        normalize_weights (int): defines normalization type for weights in
             layer
         log (bool): use tf summary writers on layer output
 
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            filter_dims=None,
-            output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        filter_dims=None,
+        output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for Layer class
 
         Args:
@@ -87,7 +93,7 @@ class Layer(object):
             num_inh (int, optional): number of inhibitory units in layer
             pos_constraint (None, valued): True to constrain layer weights to
                 be positive
-            log_activations (bool, optional): True to use tf.summary on layer 
+            log_activations (bool, optional): True to use tf.summary on layer
                 activations
 
         Raises:
@@ -100,21 +106,32 @@ class Layer(object):
             ValueError: If `biases_initializer` is not a valid string
 
         """
-        
-        _allowed_act_funcs = ['lin', 'relu', 'leaky_relu', 'softplus', 'exp',
-                              'sigmoid', 'tanh', 'quad', 'elu', 'requ']
+
+        # set activation function
+        _allowed_act_funcs = [
+            "lin",
+            "relu",
+            "leaky_relu",
+            "softplus",
+            "exp",
+            "sigmoid",
+            "tanh",
+            "quad",
+            "elu",
+            "requ",
+        ]
 
         if activation_func in _allowed_act_funcs:
             self.act_func = activation_func
-            self.nl_param = 0.1    # right now only used for leaky_relu
+            self.nl_param = 0.1  # right now only used for leaky_relu
         else:
-            raise ValueError('Invalid activation function ''%s''' % activation_func)
+            raise ValueError("Invalid activation function " "%s" "" % activation_func)
 
         # check for required inputs
         if scope is None:
-            raise TypeError('Must specify layer scope')
+            raise TypeError("Must specify layer scope")
         if input_dims is None or output_dims is None:
-            raise TypeError('Must specify both input and output dimensions')
+            raise TypeError("Must specify both input and output dimensions")
 
         self.scope = scope
 
@@ -142,9 +159,13 @@ class Layer(object):
             while len(output_dims) < 3:
                 output_dims.append(1)
             num_outputs = np.prod(output_dims)
-        else:
-            num_outputs = output_dims
-            output_dims = [output_dims, 1, 1]
+        else:  # NOTE this is the case for a conv layer
+            num_outputs = output_dims  # for conv layer output_dims = num_filters = Cout
+            output_dims = [
+                output_dims,
+                1,
+                1,
+            ]  # [num_filters, 1, 1] with num_filters=Cout
 
         self.output_dims = output_dims[:]
         # default to have N filts for N outputs in base layer class
@@ -155,16 +176,16 @@ class Layer(object):
             if self.num_lags == 1:
                 filter_dims = self.input_dims
             else:
-                #filter_dims = self.input_dims + [self.num_lags]
+                # filter_dims = self.input_dims + [self.num_lags]
                 filter_dims = self.input_dims
 
-        self.filter_dims = filter_dims[:]
-        num_inputs = np.prod(self.filter_dims)
-        self.num_filters = num_outputs
+        self.filter_dims = filter_dims[:]  # [Cin, h, w] for conv layers , [C in x ]
+        num_inputs = np.prod(self.filter_dims)  # Cin * h * w
+        self.num_filters = num_outputs  # [Cout]
 
         # create excitatory/inhibitory mask
         if num_inh > num_outputs:
-            raise ValueError('Too many inhibitory units designated')
+            raise ValueError("Too many inhibitory units designated")
         self.ei_mask = [1] * (num_outputs - num_inh) + [-1] * num_inh
 
         # save positivity constraint on weights
@@ -176,55 +197,60 @@ class Layer(object):
             self.log = True
         else:
             self.log = False
-        
+
         # Set up layer regularization
         self.reg = Regularization(
-            input_dims=filter_dims,
-            num_outputs=num_outputs,
-            vals=reg_initializer)
+            input_dims=filter_dims, num_outputs=num_outputs, vals=reg_initializer
+        )
 
         # Initialize weight values
-        weight_dims = (num_inputs, num_outputs)
+        weight_dims = (
+            num_inputs,
+            num_outputs,
+        )  # [Cin * h * w, Cout]... -> in my case it has to become Cinx Nori, Cout
 
-        if weights_initializer == 'trunc_normal':
+        if weights_initializer == "trunc_normal":
             init_weights = np.abs(np.random.normal(size=weight_dims, scale=0.1))
-        elif weights_initializer == 'normal':
+        elif weights_initializer == "normal":
             init_weights = np.random.normal(size=weight_dims, scale=0.1)
-        elif weights_initializer == 'zeros':
-            init_weights = np.zeros(shape=weight_dims, dtype='float32')
-        elif weights_initializer == 'ones':
-            init_weights = np.ones(shape=weight_dims, dtype='float32')
+        elif weights_initializer == "zeros":
+            init_weights = np.zeros(shape=weight_dims, dtype="float32")
+        elif weights_initializer == "ones":
+            init_weights = np.ones(shape=weight_dims, dtype="float32")
         else:
-            raise ValueError('Invalid weights_initializer ''%s''' %
-                             weights_initializer)
+            raise ValueError(
+                "Invalid weights_initializer " "%s" "" % weights_initializer
+            )
         if pos_constraint is not None:
             init_weights = np.maximum(init_weights, 0)
         if normalize_weights > 0:
             if normalize_weights == 2:
-                init_weights = self.num_filters * np.divide( 
-                    init_weights, 
-                    np.sqrt(np.sum(np.square(init_weights))) ) 
+                init_weights = self.num_filters * np.divide(
+                    init_weights, np.sqrt(np.sum(np.square(init_weights)))
+                )
             else:
                 init_weights = sk_normalize(init_weights, axis=0)
         elif normalize_weights < 0:
-            init_weights = np.divide(init_weights, np.maximum(np.sqrt(np.sum(np.square(init_weights), axis=0)), 1))
+            init_weights = np.divide(
+                init_weights,
+                np.maximum(np.sqrt(np.sum(np.square(init_weights), axis=0)), 1),
+            )
 
         # Initialize numpy array that will feed placeholder
-        self.weights = init_weights.astype('float32')
+        self.weights = init_weights.astype("float32")
 
         # Initialize bias values
         bias_dims = (1, num_outputs)
-        if biases_initializer == 'trunc_normal':
+        if biases_initializer == "trunc_normal":
             init_biases = np.random.normal(size=bias_dims, scale=0.1)
-        elif biases_initializer == 'normal':
+        elif biases_initializer == "normal":
             init_biases = np.random.normal(size=bias_dims, scale=0.1)
-        elif biases_initializer == 'zeros':
-            init_biases = np.zeros(shape=bias_dims, dtype='float32')
+        elif biases_initializer == "zeros":
+            init_biases = np.zeros(shape=bias_dims, dtype="float32")
         else:
-            raise ValueError('Invalid biases_initializer ''%s''' %
-                             biases_initializer)
+            raise ValueError("Invalid biases_initializer " "%s" "" % biases_initializer)
         # Initialize numpy array that will feed placeholder
-        self.biases = init_biases.astype('float32')
+        self.biases = init_biases.astype("float32")
 
         # Define tensorflow variables as placeholders
         self.weights_ph = None
@@ -232,38 +258,37 @@ class Layer(object):
         self.biases_ph = None
         self.biases_var = None
         self.outputs = None
+
     # END Layer.__init__
 
     def _define_layer_variables(self):
         # Define tensor-flow versions of variables (placeholder and variables)
 
-        with tf.name_scope('weights_init'):
+        with tf.name_scope("weights_init"):
             self.weights_ph = tf.placeholder_with_default(
-                self.weights,
-                shape=self.weights.shape,
-                name='weights_ph')
+                self.weights, shape=self.weights.shape, name="weights_ph"
+            )
             self.weights_var = tf.Variable(
-                self.weights_ph,
-                dtype=tf.float32,
-                name='weights_var')
+                self.weights_ph, dtype=tf.float32, name="weights_var"
+            )
 
         # Initialize biases placeholder/variable
-        with tf.name_scope('biases_init'):
+        with tf.name_scope("biases_init"):
             self.biases_ph = tf.placeholder_with_default(
-                self.biases,
-                shape=self.biases.shape,
-                name='biases_ph')
+                self.biases, shape=self.biases.shape, name="biases_ph"
+            )
             self.biases_var = tf.Variable(
-                self.biases_ph,
-                dtype=tf.float32,
-                name='biases_var')
+                self.biases_ph, dtype=tf.float32, name="biases_var"
+            )
 
         # Check for need of ei_mask
         if np.sum(self.ei_mask) < len(self.ei_mask):
             self.ei_mask_var = tf.constant(
-                self.ei_mask, dtype=tf.float32, name='ei_mask')
+                self.ei_mask, dtype=tf.float32, name="ei_mask"
+            )
         else:
             self.ei_mask_var = None
+
     # END Layer._define_layer_variables
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
@@ -279,7 +304,7 @@ class Layer(object):
             if self.normalize_weights > 0:
                 if self.normalize_weights == 2:
                     w_pn = tf.nn.l2_normalize(w_p) * self.num_filters
-                else:   
+                else:
                     w_pn = tf.nn.l2_normalize(w_p, axis=0)
             elif self.normalize_weights < 0:
                 w_pn = tf.divide(w_p, tf.maximum(tf.norm(w_p, axis=0), 1))
@@ -294,12 +319,14 @@ class Layer(object):
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                               noise_shape=[1, self.num_filters])
+            self.outputs = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END Layer.build_graph
 
     def set_nl_param(self, new_val):
@@ -307,34 +334,36 @@ class Layer(object):
 
     def _apply_act_func(self, pre):
 
-        if self.act_func == 'relu':
+        if self.act_func == "relu":
             post = tf.nn.relu(pre)
-        elif self.act_func == 'requ':
+        elif self.act_func == "requ":
             post = tf.square(tf.nn.relu(pre))
-        elif self.act_func == 'sigmoid':
+        elif self.act_func == "sigmoid":
             post = tf.sigmoid(pre)
-        elif self.act_func == 'tanh':
+        elif self.act_func == "tanh":
             post = tf.tanh(pre)
-        elif self.act_func == 'lin':
+        elif self.act_func == "lin":
             post = pre
-        elif self.act_func == 'softplus':
+        elif self.act_func == "softplus":
             post = tf.nn.softplus(pre)
-        elif self.act_func == 'quad':
+        elif self.act_func == "quad":
             post = tf.square(pre)
-        elif self.act_func == 'elu':
+        elif self.act_func == "elu":
             post = tf.nn.elu(pre)
-        elif self.act_func == 'exp':
+        elif self.act_func == "exp":
             post = tf.exp(pre)
-        elif self.act_func == 'leaky_relu':
+        elif self.act_func == "leaky_relu":
             post = tf.nn.leaky_relu(pre, self.nl_param)
         else:
-            raise ValueError('act func not defined')
+            raise ValueError("act func not defined")
 
         return post
 
     def _apply_dropout(self, x, use_dropout, noise_shape):
-        if use_dropout == True and self.reg.vals['dropout'] is not None:
-            return tf.nn.dropout(x, keep_prob=self.reg.vals['dropout'], noise_shape=noise_shape)
+        if use_dropout == True and self.reg.vals["dropout"] is not None:
+            return tf.nn.dropout(
+                x, keep_prob=self.reg.vals["dropout"], noise_shape=noise_shape
+            )
         else:
             return x
 
@@ -347,12 +376,16 @@ class Layer(object):
         if self.normalize_weights > 0:
             self.weights = sk_normalize(self.weights, axis=0)
         elif self.normalize_weights < 0:
-            self.weights = np.divide(self.weights, np.maximum(np.sqrt(np.sum(np.square(self.weights), axis=0)), 1))
+            self.weights = np.divide(
+                self.weights,
+                np.maximum(np.sqrt(np.sum(np.square(self.weights), axis=0)), 1),
+            )
 
         sess.run(
             [self.weights_var.initializer, self.biases_var.initializer],
-            feed_dict={self.weights_ph: self.weights,
-                       self.biases_ph: self.biases})
+            feed_dict={self.weights_ph: self.weights, self.biases_ph: self.biases},
+        )
+
     # END Layer.assign_layer_params
 
     def write_layer_params(self, sess):
@@ -368,16 +401,19 @@ class Layer(object):
         if self.normalize_weights > 0:
             w_pn = sk_normalize(w_p, axis=0)
         elif self.normalize_weights < 0:
-            w_pn = np.divide(w_p, np.maximum(np.sqrt(np.sum(np.square(w_p), axis=0)), 1))
+            w_pn = np.divide(
+                w_p, np.maximum(np.sqrt(np.sum(np.square(w_p), axis=0)), 1)
+            )
         else:
             w_pn = w_p
 
         self.weights = w_pn
         self.biases = sess.run(self.biases_var)
+
     # END Layer.write_layer_params
 
     def copy_layer_params(self, origin_layer):
-        """Copy layer parameters over to new layer (which is self in this case). 
+        """Copy layer parameters over to new layer (which is self in this case).
         Only should be called by NDN.copy_network_params()."""
 
         self.weights = deepcopy(origin_layer.weights)
@@ -418,34 +454,44 @@ class Layer(object):
         """Wrapper function for returning regularization penalty dict"""
         return self.reg.get_reg_penalty(sess)
 
-    def convert_to_unit_regularization( self ):
+    def convert_to_unit_regularization(self):
         """Initializes Unit-based regularization using current values of Regularization object"""
 
         self.reg = UnitRegularization(
             input_dims=self.input_dims,
-            num_outputs=self.reg.num_outputs, 
-            vals=self.reg.vals)
+            num_outputs=self.reg.num_outputs,
+            vals=self.reg.vals,
+        )
+
     # END Layer.convert_to_unit_regularization
 
-    def get_weights( self, w_range=None, reshape=False ):
+    def get_weights(self, w_range=None, reshape=False):
         """Return a matrix with the desired weights from the NDN. Can select subset of weights using
         w_range (default is return all), and can also reshape based on the filter dims (setting reshape=True).
         """
-        
+
         if w_range is None:
             w_range = np.arange(self.num_filters)
         else:
-            assert np.max(w_range) < self.num_filters, 'w_range exceeds number of filters'
-    
+            assert (
+                np.max(w_range) < self.num_filters
+            ), "w_range exceeds number of filters"
+
         ws = deepcopy(self.weights[:, w_range])
         if reshape:
             if self.filter_dims[2] > 1:
-                rdims = [self.filter_dims[2], self.filter_dims[1], self.filter_dims[0], len(w_range)]
+                rdims = [
+                    self.filter_dims[2],
+                    self.filter_dims[1],
+                    self.filter_dims[0],
+                    len(w_range),
+                ]
             else:
                 rdims = [self.filter_dims[1], self.filter_dims[0], len(w_range)]
-            return np.reshape( ws, rdims)
+            return np.reshape(ws, rdims)
         else:
             return ws
+
     # END NDN.get_weights
 
 
@@ -454,27 +500,28 @@ class ConvLayer(Layer):
 
     Attributes:
         shift_spacing (int): stride of convolution operation
-        num_shifts (int): number of shifts in horizontal and vertical 
+        num_shifts (int): number of shifts in horizontal and vertical
             directions for convolution operation
-            
+
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,   # this can be a list up to 3-dimensions
-            num_filters=None,
-            filter_dims=None,  # this can be a list up to 3-dimensions
-            shift_spacing=1,
-            dilation=1,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        filter_dims=None,  # this can be a list up to 3-dimensions
+        shift_spacing=1,
+        dilation=1,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for ConvLayer class
 
         Args:
@@ -483,9 +530,9 @@ class ConvLayer(Layer):
             num_filters (int): number of convolutional filters in layer
             filter_dims (int or list of ints): dimensions of input data
             shift_spacing (int): stride of convolution operation
-            activation_func (str, optional): pointwise function applied to  
+            activation_func (str, optional): pointwise function applied to
                 output of affine transformation
-                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' | 
+                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' |
                 'elu' | 'quad'
             normalize_weights (int): 1 to normalize weights, -1 to have maxnorm,  0 otherwise
                 [0] | 1, -1
@@ -497,12 +544,12 @@ class ConvLayer(Layer):
             num_inh (int, optional): number of inhibitory units in layer
             pos_constraint (None, valued): True to constrain layer weights to
                 be positive
-            log_activations (bool, optional): True to use tf.summary on layer 
+            log_activations (bool, optional): True to use tf.summary on layer
                 activations
 
         Raises:
             ValueError: If `pos_constraint` is `True`
-            
+
         """
 
         # Process stim and filter dimensions
@@ -533,23 +580,24 @@ class ConvLayer(Layer):
         # Calculate number of shifts (for output)
         num_shifts = [1, 1]
         if input_dims[1] > 1:
-            num_shifts[0] = int(np.ceil(input_dims[1]/shift_spacing))
+            num_shifts[0] = int(np.ceil(input_dims[1] / shift_spacing))
         if input_dims[2] > 1:
-            num_shifts[1] = int(np.ceil(input_dims[2]/shift_spacing))
+            num_shifts[1] = int(np.ceil(input_dims[2] / shift_spacing))
 
         super(ConvLayer, self).__init__(
-                scope=scope,
-                input_dims=input_dims,
-                filter_dims=filter_dims,
-                output_dims=num_filters,   # Note difference from layer
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer=weights_initializer,
-                biases_initializer=biases_initializer,
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,  # note difference from layer (not anymore)
-                log_activations=log_activations)
+            scope=scope,
+            input_dims=input_dims,
+            filter_dims=filter_dims,
+            output_dims=num_filters,  # Note difference from layer
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer=weights_initializer,
+            biases_initializer=biases_initializer,
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,  # note difference from layer (not anymore)
+            log_activations=log_activations,
+        )
 
         # ConvLayer-specific properties
         self.shift_spacing = shift_spacing
@@ -557,26 +605,35 @@ class ConvLayer(Layer):
         self.dilation = dilation
         # Changes in properties from Layer - note this is implicitly multi-dimensional
         self.output_dims = [num_filters] + num_shifts[:]
+
     # END ConvLayer.__init__
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
 
-        assert params_dict is not None, 'Incorrect ConvLayer initialization.'
+        assert params_dict is not None, "Incorrect ConvLayer initialization."
         # Unfold siLayer-specific parameters for building graph
 
         with tf.name_scope(self.scope):
             self._define_layer_variables()
 
             # Reshape of inputs (4-D):
-            input_dims = [-1, self.input_dims[2], self.input_dims[1],
-                          self.input_dims[0]]
+            input_dims = [
+                -1,
+                self.input_dims[2],
+                self.input_dims[1],
+                self.input_dims[0],
+            ]
             # this is reverse-order from Matlab:
             # [space-2, space-1, lags, and num_examples]
             shaped_input = tf.reshape(inputs, input_dims)
 
             # Reshape weights (4:D: [filter_height, filter_width, in_channels, out_channels])
-            conv_filter_dims = [self.filter_dims[2], self.filter_dims[1], self.filter_dims[0],
-                                self.num_filters]
+            conv_filter_dims = [
+                self.filter_dims[2],
+                self.filter_dims[1],
+                self.filter_dims[0],
+                self.num_filters,
+            ]
 
             if self.pos_constraint is not None:
                 w_p = tf.maximum(self.weights_var, 0.0)
@@ -594,14 +651,20 @@ class ConvLayer(Layer):
 
             # Make strides and dilation lists, 2D lists were failing on TF:12.0.2 for some reason
             strides, dilation = [1, 1, 1, 1], [1, 1, 1, 1]
-            if conv_filter_dims[0] > 1:             # Assumes data_format: NHWC
+            if conv_filter_dims[0] > 1:  # Assumes data_format: NHWC
                 strides[1] = self.shift_spacing
                 dilation[1] = self.dilation
             if conv_filter_dims[1] > 1:
                 strides[2] = self.shift_spacing
                 dilation[2] = self.dilation
 
-            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides=strides, dilations=dilation, padding='SAME')
+            _pre = tf.nn.conv2d(
+                shaped_input,
+                ws_conv,
+                strides=strides,
+                dilations=dilation,
+                padding="SAME",
+            )
             pre = tf.add(_pre, self.biases_var)
 
             if self.ei_mask_var is None:
@@ -609,43 +672,49 @@ class ConvLayer(Layer):
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            post_drpd = self._apply_dropout(post, use_dropout=use_dropout,
-                                            noise_shape=[1, 1, 1, self.num_filters])
+            post_drpd = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, 1, 1, self.num_filters]
+            )
             self.outputs = tf.reshape(
-                post_drpd, [-1, self.num_filters * self.num_shifts[0] * self.num_shifts[1]])
+                post_drpd,
+                [-1, self.num_filters * self.num_shifts[0] * self.num_shifts[1]],
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END ConvLayer.build_graph
+
 
 class DiffOfGaussiansLayer(Layer):
     """Implementation of difference of gaussians layer
-       based on: https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1004927
+    based on: https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1004927
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,   # this can be a list up to 3-dimensions
-            num_filters=None,
-            bounds=None,
-            activation_func='relu',
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            num_inh=0,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        bounds=None,
+        activation_func="relu",
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        num_inh=0,
+        log_activations=False,
+    ):
         """Constructor for DiffOfGaussiansLayer class
 
         Args:
             scope (str): name scope for variables and operations in layer
             input_dims (int or list of ints): dimensions of input data
             num_filters (int): number of independent gaussian filters
-            bounds ([(float, float),(float, float),(float, float),(float, float)]): bounds 
+            bounds ([(float, float),(float, float),(float, float),(float, float)]): bounds
                 (lower,upper) for alpha, sigma, ux, uy weights of DoG filter.
-            activation_func (str, optional): pointwise function applied to  
+            activation_func (str, optional): pointwise function applied to
                 output of affine transformation
-                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' | 
+                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' |
                 'elu' | 'quad'
             normalize_weights (int): 1 to normalize weights, -1 to have maxnorm,  0 otherwise
                 [0] | 1, -1
@@ -657,18 +726,18 @@ class DiffOfGaussiansLayer(Layer):
             num_inh (int, optional): number of inhibitory units in layer
             pos_constraint (None, valued): True to constrain layer weights to
                 be positive
-            log_activations (bool, optional): True to use tf.summary on layer 
+            log_activations (bool, optional): True to use tf.summary on layer
                 activations
 
         Raises:
             ValueError: If `pos_constraint` is `True`
-        
+
         Notes:
             Weights are `[alpha, sigma, ux, uy]` twice (for first and second gaussian).
-                Each one (e.g. alpha, ...) is a vector of shape (num_filters).          
-            self.impl_concentric: If true (by default) the first's (Gauss1) ux, uy weights are 
+                Each one (e.g. alpha, ...) is a vector of shape (num_filters).
+            self.impl_concentric: If true (by default) the first's (Gauss1) ux, uy weights are
                 reused for the second gaussian (Gauss2) as well (DoG == Gauss1 - Gauss2)
-            self.impl_sigma: If true (by default) the second's (Gauss2) actual sigma is 
+            self.impl_sigma: If true (by default) the second's (Gauss2) actual sigma is
                 a summation of sigma1 and sigma2 (i.e. Gauss2 has always >= sigma than Gauss1)
         """
 
@@ -687,21 +756,24 @@ class DiffOfGaussiansLayer(Layer):
         output_dims = [num_filters]
 
         # Only random (with input-size bounds) or zero initializations are available for parameters this layer
-        if not weights_initializer in ['zeros', 'random']:
-            raise ValueError('Invalid weights_initializer ''%s''' %weights_initializer)
+        if not weights_initializer in ["zeros", "random"]:
+            raise ValueError(
+                "Invalid weights_initializer " "%s" "" % weights_initializer
+            )
 
         super(DiffOfGaussiansLayer, self).__init__(
-                scope=scope,
-                input_dims=8,   # Hack to initialize size of weights to the number of this layer's parameters
-                output_dims= output_dims,   
-                activation_func=activation_func,
-                normalize_weights=0,
-                weights_initializer='zeros',
-                biases_initializer=biases_initializer,
-                reg_initializer=None,
-                num_inh=num_inh,
-                pos_constraint=None,
-                log_activations=log_activations)
+            scope=scope,
+            input_dims=8,  # Hack to initialize size of weights to the number of this layer's parameters
+            output_dims=output_dims,
+            activation_func=activation_func,
+            normalize_weights=0,
+            weights_initializer="zeros",
+            biases_initializer=biases_initializer,
+            reg_initializer=None,
+            num_inh=num_inh,
+            pos_constraint=None,
+            log_activations=log_activations,
+        )
 
         # Changes in properties from Layer - note this is implicitly multi-dimensional
         self.output_dims = output_dims
@@ -712,37 +784,47 @@ class DiffOfGaussiansLayer(Layer):
 
         # Set bounds for variables:
         # - Alpha is always positive
-        # - Sigma is positive and smaller than the size of the image 
+        # - Sigma is positive and smaller than the size of the image
         # - Centers (ux, uy) within image
         if bounds is None:
             zero_eps = np.finfo(float).eps
             bounds = [
-                (zero_eps, 10),                 # alpha
-                (1, 25),                        # sigma
-                (2, self.input_dims[1] - 2),    # ux
-                (2, self.input_dims[2] - 2)     # uy
-                ]
-        
+                (zero_eps, 10),  # alpha
+                (1, 25),  # sigma
+                (2, self.input_dims[1] - 2),  # ux
+                (2, self.input_dims[2] - 2),  # uy
+            ]
+
         self.bounds_alpha = bounds[0]
         self.bounds_sigma = bounds[1]
         self.bounds_x = bounds[2]
         self.bounds_y = bounds[3]
 
-        if weights_initializer == 'random':
-            self.weights = np.array(self.__get_random_w(num_filters) + self.__get_random_w(num_filters), np.float32)
+        if weights_initializer == "random":
+            self.weights = np.array(
+                self.__get_random_w(num_filters) + self.__get_random_w(num_filters),
+                np.float32,
+            )
+
     # END DiffOfGaussiansLayer.__init__
 
     def __get_random_w(self, num_filters):
         def get_random_for_bounds(bounds):
-            return bounds[0] + (bounds[1] - bounds[0])*np.random.sample()
+            return bounds[0] + (bounds[1] - bounds[0]) * np.random.sample()
 
         return [
-            [get_random_for_bounds(self.bounds_alpha) for x in range(num_filters)], # alpha
-            [get_random_for_bounds(self.bounds_sigma) for x in range(num_filters)], # sigma
-            [get_random_for_bounds(self.bounds_x) for x in range(num_filters)], # ux
-            [get_random_for_bounds(self.bounds_y) + 2 for x in range(num_filters)], # uy
+            [
+                get_random_for_bounds(self.bounds_alpha) for x in range(num_filters)
+            ],  # alpha
+            [
+                get_random_for_bounds(self.bounds_sigma) for x in range(num_filters)
+            ],  # sigma
+            [get_random_for_bounds(self.bounds_x) for x in range(num_filters)],  # ux
+            [
+                get_random_for_bounds(self.bounds_y) + 2 for x in range(num_filters)
+            ],  # uy
         ]
-        
+
     def __get_weights_clipped(self, weights, num_filters, weights_index_offset=0):
         index_baseline = 4 * weights_index_offset
 
@@ -752,29 +834,32 @@ class DiffOfGaussiansLayer(Layer):
         ux = tf.reshape(tf.gather(weights, 2 + index_baseline), [1, 1, num_filters])
         uy = tf.reshape(tf.gather(weights, 3 + index_baseline), [1, 1, num_filters])
 
-        # Clip weights within their bounds. 
-        alpha = tf.maximum(alpha, self.bounds_alpha[0]) # alpha isn't clipped because it should be allowed to grow above any bounds
+        # Clip weights within their bounds.
+        alpha = tf.maximum(
+            alpha, self.bounds_alpha[0]
+        )  # alpha isn't clipped because it should be allowed to grow above any bounds
         sigma = tf.clip_by_value(sigma, self.bounds_sigma[0], self.bounds_sigma[1])
         ux = tf.clip_by_value(ux, self.bounds_x[0], self.bounds_x[1])
-        uy = tf.clip_by_value(uy, self.bounds_y[0], self.bounds_y[1])     
+        uy = tf.clip_by_value(uy, self.bounds_y[0], self.bounds_y[1])
 
         return (alpha, sigma, ux, uy)
 
-
     def __get_gaussian(self, X, Y, alpha, sigma, ux, uy):
-        return (alpha) * (tf.exp(-((X - ux) ** 2 + (Y - uy) ** 2) / 2 / sigma) / (2*sigma*np.pi))   # implementation is slightly different than paper (not sigma^2)
+        return (alpha) * (
+            tf.exp(-((X - ux) ** 2 + (Y - uy) ** 2) / 2 / sigma) / (2 * sigma * np.pi)
+        )  # implementation is slightly different than paper (not sigma^2)
 
     def __get_DoG(self, weights, W, H, num_filters):
         (alpha1, sigma1, ux1, uy1) = self.__get_weights_clipped(weights, num_filters, 0)
-        (alpha2, sigma2, ux2, uy2) = self.__get_weights_clipped(weights, num_filters, 1)
+        (alphbbbbbbbbbb`a2, sigma2, ux2, uy2) = self.__get_weights_clipped(weights, num_filters, 1)
 
         X, Y = np.meshgrid(W, H)
         X = tf.constant(np.expand_dims(X, 2).astype(np.float32))
         Y = tf.constant(np.expand_dims(Y, 2).astype(np.float32))
 
-        if self.impl_sigma:         # second sigma is always larger than the first one
+        if self.impl_sigma:  # second sigma is always larger than the first one
             sigma2 = sigma1 + sigma2
-        if self.impl_concentric:    # the gaussians are co-centric
+        if self.impl_concentric:  # the gaussians are co-centric
             ux2, uy2 = ux1, uy1
 
         DoG1 = self.__get_gaussian(X, Y, alpha1, sigma1, ux1, uy1)
@@ -782,18 +867,21 @@ class DiffOfGaussiansLayer(Layer):
 
         return DoG1 - DoG2
 
-
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
 
-        assert params_dict is not None, 'Incorrect ConvLayer initialization.'
+        assert params_dict is not None, "Incorrect ConvLayer initialization."
         # Unfold siLayer-specific parameters for building graph
 
         with tf.name_scope(self.scope):
             self._define_layer_variables()
 
             # Reshape of inputs (4-D):
-            input_dims = [-1, self.input_dims[2], self.input_dims[1],
-                          self.input_dims[0]]
+            input_dims = [
+                -1,
+                self.input_dims[2],
+                self.input_dims[1],
+                self.input_dims[0],
+            ]
             # this is reverse-order from Matlab:
             # [space-2, space-1, lags, and num_examples]
             shaped_input = tf.reshape(inputs, input_dims)
@@ -805,9 +893,9 @@ class DiffOfGaussiansLayer(Layer):
 
             num_filters = self.output_dims[0]
             weights = tf.reshape(self.weights_var, [8, num_filters])
-            
+
             gm_np = self.__get_DoG(weights, W, H, num_filters)
-            gm = tf.expand_dims(gm_np, 2) # W, H, 1, num_filters
+            gm = tf.expand_dims(gm_np, 2)  # W, H, 1, num_filters
 
             gaussed = tf.multiply(shaped_input, gm)
 
@@ -819,14 +907,348 @@ class DiffOfGaussiansLayer(Layer):
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            post_drpd = self._apply_dropout(post, use_dropout=use_dropout,
-                                            noise_shape=[1, 1, 1, self.num_filters])
+            post_drpd = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, 1, 1, self.num_filters]
+            )
             self.outputs = post_drpd
-            
+
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END DiffOfGaussiansLayer.build_graph
+
+
+class RotEqConvLayer(Layer):
+    """
+    Implementation of the first layer for a rotational equivariant convolutional NN based on steerable filters (2dhermite)
+    Note:
+        input:  [batch_size, space dim 1, space dim 2, #input channels]
+        output: [batch_size, space dim 1, space dim 2, # orientations, # output channels]
+    """
+
+    def __init__(
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        filter_sp_size=None,
+        rot_eq_params=None,
+        shift_spacing=1,
+        dilation=1,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+        first_rot_eq=False,  # TODO decide what to put here
+    ):
+        """Constructor for ConvLayer class
+        Args:
+            scope (str): name scope for variables and operations in layer
+            input_dims (int or list of ints): dimensions of input data
+            num_filters (int): number of convolutional filters in layer
+            filter_dims (int or list of ints): dimensions of input data
+            num_ori (int)
+            max_rank (int)
+            sigma (float)
+            shift_spacing (int): stride of convolution operation
+            activation_func (str, optional): pointwise function applied to
+                output of affine transformation
+                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' |
+                'elu' | 'quad'
+            normalize_weights (int): 1 to normalize weights, -1 to have maxnorm,  0 otherwise
+                [0] | 1, -1
+            weights_initializer (str, optional): initializer for the weights
+                ['trunc_normal'] | 'normal' | 'zeros'
+            biases_initializer (str, optional): initializer for the biases
+                'trunc_normal' | 'normal' | ['zeros']
+            reg_initializer (dict, optional): see Regularizer docs for info
+            num_inh (int, optional): number of inhibitory units in layer
+            pos_constraint (None, valued): True to constrain layer weights to
+                be positive
+            log_activations (bool, optional): True to use tf.summary on layer
+                activations
+
+        Raises:
+            ValueError: If `pos_constraint` is `True`
+
+        """  # TODO fix description
+
+        # process input dimensions [Cin, W, H] ... should already be ok
+
+        # TODO fix input dimension to be [Cin, W, H]
+        # it must be an image, with or without channells
+        # if without -> add 1 fictitious dimension
+
+        # if isinstance(input_dims, list):
+        #     while len(input_dims) < 3:
+        #         input_dims.append(1)
+        # else:
+        #     # assume 1-dimensional (space)
+        #     input_dims = [1, input_dims, 1]
+
+        # process filter dimensions [Cin, w, h] ... should already be ok
+
+        # if filter_dims is None:
+        #     filter_dims = input_dims
+        # else:
+        #     if isinstance(filter_dims, list):
+        #         while len(filter_dims) < 3:
+        #             filter_dims.extend(1)
+        #     else:
+        #         filter_dims = [filter_dims, 1, 1]
+
+        # lags? keep this commented for now, it should not matter
+        # if nlags is not None:
+        #    filter_dims[0] *= nlags
+
+        # check that num_filters is Cout ... it should already be ok
+
+        # If output dimensions already established, just strip out num_filters
+        # if isinstance(num_filters, list):
+        #     num_filters = num_filters[0]
+
+        # Calculate number of shifts (for output) (Assuming padding = SAME)
+
+        self.filter_sp_size = filter_sp_size
+        self.rot_eq_params = rot_eq_params
+        self._set_rot_eq_attributes()
+
+        self.num_c_in = input_dims[0]
+        
+        self.input_h = input_dims[1]
+        self.input_w = input_dims[2]
+
+        self.base_filters = self._get_all_ori_base_filters()  # [ori, filter_idx, h, w]
+        self.num_w_per_filter = len(self.base_filters[1])
+        self.first_rot_eq = first_rot_eq
+
+        #TODO fix height and width
+        super(RotEqConvLayer, self).__init__(
+            scope=scope,
+            input_dims=input_dims,  # [# Cin, #W, # H]
+            filter_dims=[
+                self.num_w_per_filter * self.num_c_in
+            ],  # Hack to initialize weights -> num_w_per_filter x Cin
+            output_dims=num_filters,  # NOTE difference from layer here the number of output channel is passed as output_dim to the layer constructor
+            # NOTE num filter is a int so output_dims is initialized as well as a int
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer=weights_initializer,
+            biases_initializer=biases_initializer,
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,  # note difference from layer (not anymore)
+            log_activations=log_activations,
+        )
+
+        # ConvLayer-specific properties
+        num_shifts = [1, 1]
+        if input_dims[1] > 1:
+            num_shifts[0] = int(np.ceil(self.input_h / shift_spacing))
+        if input_dims[2] > 1:
+            num_shifts[1] = int(np.ceil(self.input_w / shift_spacing))
+
+        self.num_shifts = num_shifts
+        self.shift_spacing = shift_spacing
+        self.dilation = dilation
+        self.filter_dims = np.array(
+            [input_dims[0], self.filter_sp_size, self.filter_sp_size]
+        )
+        print("input dims ==", input_dims)
+        print("self.filter_dims ==", self.filter_dims)
+        self.output_dims = [num_filters*self.num_ori] + num_shifts[:]
+
+    def _set_rot_eq_attributes(self):
+        if self.rot_eq_params == None:
+            self.rot_eq_params = {"filter_type": "simple"}
+
+        if self.rot_eq_params["filter_type"] == "simple":
+            self.filter_type = "simple"
+            self.num_ori = 4
+            if self.filter_sp_size == None:
+                self.filter_sp_size = 3
+
+        if self.rot_eq_params["filter_type"] == "Hermite2d":
+            if "num_ori" not in self.rot_eq_params:
+                self.rot_eq_params["num_ori"] = 16
+            if "max_rank" not in self.rot_eq_params:
+                self.rot_eq_params["max_rank"] = 5
+            if "filter_abs_boundaries" not in self.rot_eq_params:
+                self.rot_eq_params["filter_abs_boundaries"] = 9
+
+            if self.filter_sp_size == None:
+                self.filter_sp_size = 10
+            if "sigma" not in self.rot_eq_params:
+                self.rot_eq_params["sigma"] = 1
+
+            self.filter_type = "Hermite2d"
+            self.num_ori = self.rot_eq_params["num_ori"]
+            self.max_rank = self.rot_eq_params["max_rank"]
+            self.filter_abs_boundaries = self.rot_eq_params["filter_abs_boundaries"]
+            self.sigma = self.rot_eq_params["sigma"]
+        # TODO add last type of filters
+
+    def _get_all_ori_base_filters(self):
+        if self.filter_type == "simple":
+            filters = SimpleFilters.get_all_ori_base_filters(self.filter_sp_size)
+        if self.filter_type == "Hermite2d":
+            filters = Hermite2D.get_all_ori_base_filters(
+                self.filter_abs_boundaries,
+                self.filter_sp_size,
+                self.max_rank,
+                self.sigma,
+                self.num_ori,
+            )
+        filter
+        return filters
+
+    def _perform_global_rotation(self, filters):
+        print("filters before global rotation", filters.shape)
+        # [o_out h, w, cin * o_in, c_out] -> [o_out h, w, cin, o_in, c_out]
+        filters = tf.reshape(
+            filters,
+            [
+                self.num_ori,
+                self.filter_sp_size,
+                self.filter_sp_size,
+                -1,
+                self.num_ori,
+                self.num_filters,
+            ],
+        )
+        # perform global rotation, move o_out index to last position
+        # [h, w, cin, o_in, c_out, o_out]
+        filters = tf.stack(
+            [tf.roll(filters[i], axis=3, shift=i) for i in range(self.num_ori)], axis=-1
+        )
+        # [h, w, cin, o_in, c_out, o_out] -> [h, w, cin * o_in, c_out * o_out]
+        filters = tf.reshape(
+            filters,
+            [
+                self.filter_sp_size,
+                self.filter_sp_size,
+                -1,
+                self.num_filters * self.num_ori,
+            ],
+        )
+        return filters
+
+    def _get_filters(self, bf, coeffs):
+        if self.first_rot_eq == True:
+            _filters = tf.einsum("oxhw, ixk -> hwiko", bf, coeffs)
+            filter_shape = [
+                self.filter_dims[2],
+                self.filter_dims[1],
+                self.filter_dims[0],
+                self.num_filters * self.num_ori,
+            ]
+            print("filter shape", filter_shape)
+            filters = tf.reshape(_filters, filter_shape)
+        else:
+            _filters = tf.einsum("oxhw, ixk -> ohwik", bf, coeffs)
+            # perform global rotation on filter dims and put orientations close to Cout
+            filters = self._perform_global_rotation(_filters)
+        return filters
+
+    def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
+
+        # NOTE <- why this?
+        # assert (
+        #     params_dict is not None
+        # ), "Incorrect ConvLayer initialization."
+        # Unfold siLayer-specific parameters for building graph
+
+        with tf.name_scope(self.scope):
+
+            # define self.weights_var and self.biases_var
+            # self.weights_var:  [Cin * num_w_per_filter, Cout]
+            # self.biases_var:  dims: [1, Cout]
+            self._define_layer_variables()
+
+            # restore input dimensions [Nbatch], H, W, Cin]
+
+            input_shape = [
+                -1,
+                self.input_h,
+                self.input_w,
+                self.num_c_in,
+            ]
+
+            shaped_input = tf.reshape(inputs, input_shape)
+            coeff_shape = [self.num_c_in, self.num_w_per_filter, self.num_filters]
+            
+            coeffs = tf.reshape(self.weights_var, coeff_shape)
+
+            
+            bf = tf.convert_to_tensor(self.base_filters, dtype=tf.float32)
+            print("base_filter", bf.shape)
+
+            # get filters [h, w Cin, Cout * ori]
+            filters = self._get_filters(bf, coeffs)
+
+            # does it make sense to consider a positive constraint?
+            if self.pos_constraint is not None:
+                filters_p = tf.maximum(filters, 0.0)
+            else:
+                filters_p = filters  # these are created by _define_layer_variables()
+
+            # normalization
+            if self.normalize_weights > 0:
+                filters_pn = tf.nn.l2_normalize(filters_p, axis=0)
+            elif self.normalize_weights < 0:
+                filters_pn = tf.divide(
+                    filters_p, tf.maximum(tf.norm(filters_p, axis=0), 1)
+                )
+            else:
+                filters_pn = filters_p
+            print(filters_pn.shape)
+
+            # perform convolution
+            _pre = tf.nn.conv2d(
+                shaped_input,
+                filters_pn,
+                strides=self.shift_spacing,
+                dilations=self.dilation,
+                padding="SAME",
+            )
+           
+            _pre = tf.reshape(
+                _pre,
+                [-1] + self.num_shifts + [self.num_filters, self.num_ori],
+            )
+            
+            # reshape biases_var_shape: add extra dimension at the end to account for the multiple orientations
+            biases = tf.reshape(self.biases_var, [1, self.num_filters, 1])
+
+            # add biases
+            pre = tf.add(_pre, biases)
+
+            # apply activation function and nmask if excitatory and inhibitory constraints are defined
+            if self.ei_mask_var is None:
+                post = self._apply_act_func(pre)
+            else:
+                post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
+
+            # apply dropout (added an extra dimension to account for orientations)
+            post_drpt = self._apply_dropout(
+                post,
+                use_dropout=use_dropout,
+                noise_shape=[1, 1, 1, self.num_filters, 1],
+            )
+            
+            self.outputs = tf.reshape(post_drpt, [-1, np.prod(post_drpt.shape[1:])])
+
+        # this is what is logged by the layer
+        # TODO fix this
+        # if self.log:
+        #     tf.summary.histogram('act_pre', pre)
+
+        #     tf.summary.histogram('act_post', post)
 
 
 # class ClusterLayer(Layer):
@@ -876,7 +1298,7 @@ class DiffOfGaussiansLayer(Layer):
 
 class ConvReadoutLayer(Layer):
     """Reduces convolutional input to single output (num_outputs) with each output corresponding
-    to one spatial location within the conv input, specified by internal variable xy_out. Weights 
+    to one spatial location within the conv input, specified by internal variable xy_out. Weights
     are over filter_dimensions after spatial reduction
 
     Attributes:
@@ -886,20 +1308,21 @@ class ConvReadoutLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            num_filters=None,
-            shift_spacing=1,
-            activation_func='relu',
-            xy_out=None,
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        shift_spacing=1,
+        activation_func="relu",
+        xy_out=None,
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for ConvLayerXY class
 
         Args:
@@ -937,7 +1360,7 @@ class ConvReadoutLayer(Layer):
             while len(input_dims) < 3:
                 input_dims.append(1)
         else:
-            # assume 1-dimensional 
+            # assume 1-dimensional
             input_dims = [input_dims, 1, 1]
 
         # Internal representation will be 3-dimensional, combining num_lags with input_dims[0]
@@ -947,7 +1370,9 @@ class ConvReadoutLayer(Layer):
         else:
             self.num_lags = 1
         self.input_dims = input_dims[:3].copy()
-        assert np.prod(self.input_dims[1:]) > 1, 'ConvReadout must be reading out input with spatial dims.'
+        assert (
+            np.prod(self.input_dims[1:]) > 1
+        ), "ConvReadout must be reading out input with spatial dims."
 
         filter_dims = [self.input_dims[0], 1, 1]
 
@@ -967,24 +1392,25 @@ class ConvReadoutLayer(Layer):
             reg_initializer=reg_initializer,
             num_inh=num_inh,
             pos_constraint=pos_constraint,  # note difference from layer (not anymore)
-            log_activations=log_activations)
+            log_activations=log_activations,
+        )
 
-        
         self.xy_out = xy_out
+
     # END ConvReadoutLayer.__init__
 
     def _space_collapse_tensor(self):
 
-        assert self.xy_out is not None, 'xy_out in ConvReadout must be set.'
+        assert self.xy_out is not None, "xy_out in ConvReadout must be set."
         num_space = np.prod(self.input_dims[1:])
 
         pysct = np.zeros([self.input_dims[2], self.input_dims[1], self.xy_out.shape[0]])
         pysct[self.xy_out] = 1.0
-        return np.reshape(pysct, [num_space, self.xy_out.shape[0]])       
+        return np.reshape(pysct, [num_space, self.xy_out.shape[0]])
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
 
-        #assert params_dict is not None, 'Incorrect Layer initialization.'
+        # assert params_dict is not None, 'Incorrect Layer initialization.'
 
         with tf.name_scope(self.scope):
             self._define_layer_variables()
@@ -992,8 +1418,11 @@ class ConvReadoutLayer(Layer):
             # Collapse spatial-convolution across space
             sct = tf.constant(self._space_collapse_tensor(), dtype=tf.float32)
 
-            shaped_input = tf.reshape(inputs, [-1, self.input_dims[2]*self.input_dims[1], self.input_dims[0]])
-            spatial_collapse_stim = tf.tensordot( shaped_input, sct, [1, 0])
+            shaped_input = tf.reshape(
+                inputs,
+                [-1, self.input_dims[2] * self.input_dims[1], self.input_dims[0]],
+            )
+            spatial_collapse_stim = tf.tensordot(shaped_input, sct, [1, 0])
 
             # Prepare weights
             if self.pos_constraint is not None:
@@ -1008,20 +1437,24 @@ class ConvReadoutLayer(Layer):
             else:
                 w_pn = w_p
 
-            _pre = tf.add(tf.reduce_sum(
-                tf.multiply(spatial_collapse_stim, w_pn), axis=1), self.biases_var)
+            _pre = tf.add(
+                tf.reduce_sum(tf.multiply(spatial_collapse_stim, w_pn), axis=1),
+                self.biases_var,
+            )
 
             if self.ei_mask_var is None:
                 _post = self._apply_act_func(_pre)
             else:
                 _post = tf.multiply(self._apply_act_func(_pre), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(_post, use_dropout=use_dropout,
-                            noise_shape=[1, self.num_filters])
-                
+            self.outputs = self._apply_dropout(
+                _post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
+
         if self.log:
-            tf.summary.histogram('act_pre', _pre)
-            tf.summary.histogram('act_post', _post)
+            tf.summary.histogram("act_pre", _pre)
+            tf.summary.histogram("act_post", _post)
+
     # END ConvXYLayer.build_graph
 
 
@@ -1035,21 +1468,22 @@ class ConvXYLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            num_filters=None,
-            filter_dims=None,  # this can be a list up to 3-dimensions
-            shift_spacing=1,
-            xy_out=None,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        filter_dims=None,  # this can be a list up to 3-dimensions
+        shift_spacing=1,
+        xy_out=None,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for ConvLayerXY class
 
         Args:
@@ -1088,13 +1522,13 @@ class ConvXYLayer(Layer):
             while len(input_dims) < 3:
                 input_dims.append(1)
         else:
-            # assume 1-dimensional 
+            # assume 1-dimensional
             input_dims = [input_dims, 1, 1]
 
- #       if xy_out is not None:
-  #          filter_dims = [input_dims[0], 1, 1]
-   #     else:
-    #        filter_dims = None
+        #       if xy_out is not None:
+        #          filter_dims = [input_dims[0], 1, 1]
+        #     else:
+        #        filter_dims = None
 
         # If output dimensions already established, just strip out num_filters
         if isinstance(num_filters, list):
@@ -1119,7 +1553,8 @@ class ConvXYLayer(Layer):
             reg_initializer=reg_initializer,
             num_inh=num_inh,
             pos_constraint=pos_constraint,  # note difference from layer (not anymore)
-            log_activations=log_activations)
+            log_activations=log_activations,
+        )
 
         # ConvLayer-specific properties
         self.shift_spacing = shift_spacing
@@ -1137,10 +1572,12 @@ class ConvXYLayer(Layer):
     def _get_indices(self, batch_sz):
         """Old function used for previous implementation"""
         nc = self.num_filters
-        space_ind = zip(np.repeat(np.arange(batch_sz), nc),
-                        np.tile(self.xy_out[:, 1], (batch_sz,)),
-                        np.tile(self.xy_out[:, 0], (batch_sz,)),
-                        np.tile(np.arange(nc), (batch_sz,)))
+        space_ind = zip(
+            np.repeat(np.arange(batch_sz), nc),
+            np.tile(self.xy_out[:, 1], (batch_sz,)),
+            np.tile(self.xy_out[:, 0], (batch_sz,)),
+            np.tile(np.arange(nc), (batch_sz,)),
+        )
         return tf.constant(space_ind, dtype=tf.int32)
 
     def _space_collapse_tensor(self):
@@ -1148,11 +1585,11 @@ class ConvXYLayer(Layer):
 
         pysct = np.zeros([self.num_shifts[0], self.num_shifts[1], self.xy_out.shape[0]])
         pysct[self.xy_out] = 1.0
-        return np.reshape(pysct, [num_space, self.xy_out.shape[0]])       
+        return np.reshape(pysct, [num_space, self.xy_out.shape[0]])
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
 
-        assert params_dict is not None, 'Incorrect Layer initialization.'
+        assert params_dict is not None, "Incorrect Layer initialization."
         # Unfold Layer-specific parameters for building graph
 
         with tf.name_scope(self.scope):
@@ -1173,8 +1610,18 @@ class ConvXYLayer(Layer):
             else:
                 w_pn = w_p
 
-            ws_conv = tf.reshape(w_pn, [self.filter_dims[2], self.filter_dims[1], self.filter_dims[0], self.num_filters])
-            shaped_input = tf.reshape(inputs, [-1, self.input_dims[2], self.input_dims[1], self.input_dims[0]])
+            ws_conv = tf.reshape(
+                w_pn,
+                [
+                    self.filter_dims[2],
+                    self.filter_dims[1],
+                    self.filter_dims[0],
+                    self.num_filters,
+                ],
+            )
+            shaped_input = tf.reshape(
+                inputs, [-1, self.input_dims[2], self.input_dims[1], self.input_dims[0]]
+            )
 
             strides = [1, 1, 1, 1]
             if self.filter_dims[2] > 1:
@@ -1182,16 +1629,22 @@ class ConvXYLayer(Layer):
             if self.filter_dims[1] > 1:
                 strides[2] = self.shift_spacing
 
-            _pre0 = tf.nn.conv2d(shaped_input, ws_conv, strides, padding='SAME')
+            _pre0 = tf.nn.conv2d(shaped_input, ws_conv, strides, padding="SAME")
 
             print(sct)
             print(_pre0)
 
             if self.xy_out is not None:
-                #indices = self._get_indices(batch_size)
-                #_pre = tf.reshape(tf.gather_nd(_pre0, indices), (-1, self.num_filters))
-                _pre = tf.tensordot(tf.reshape(_pre0, [-1, self.num_filters, self.num_shifts[0]*self.num_shifts[1] ]),
-                                    sct, [2, 0])
+                # indices = self._get_indices(batch_size)
+                # _pre = tf.reshape(tf.gather_nd(_pre0, indices), (-1, self.num_filters))
+                _pre = tf.tensordot(
+                    tf.reshape(
+                        _pre0,
+                        [-1, self.num_filters, self.num_shifts[0] * self.num_shifts[1]],
+                    ),
+                    sct,
+                    [2, 0],
+                )
                 print(_pre)
             else:
                 _pre = _pre0
@@ -1205,40 +1658,48 @@ class ConvXYLayer(Layer):
 
             # reminder: self.xy_out = centers[which_cell] = [ctr_x, ctr_y]
             if self.xy_out is not None:
-                self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                                   noise_shape=[1, self.num_filters])
+                self.outputs = self._apply_dropout(
+                    post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+                )
             else:
-                post_drpd = self._apply_dropout(post, use_dropout=use_dropout,
-                                                noise_shape=[1, 1, 1, self.num_filters])
+                post_drpd = self._apply_dropout(
+                    post,
+                    use_dropout=use_dropout,
+                    noise_shape=[1, 1, 1, self.num_filters],
+                )
                 self.outputs = tf.reshape(
-                    post_drpd, [-1, self.num_filters * self.num_shifts[0] * self.num_shifts[1]])
+                    post_drpd,
+                    [-1, self.num_filters * self.num_shifts[0] * self.num_shifts[1]],
+                )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END ConvXYLayer.build_graph
 
 
 class SepLayer(Layer):
-    """Implementation of separable neural network layer; see 
+    """Implementation of separable neural network layer; see
     http://papers.nips.cc/paper/6942-neural-system-identification-for-large-populations-separating-what-and-where
     for more info
 
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,    # this can be a list up to 3-dimensions
-            output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for SepLayer class
 
         Args:
@@ -1247,11 +1708,11 @@ class SepLayer(Layer):
             output_dims (int): dimensions of output data
             activation_func (str, optional): pointwise function applied to
                 output of affine transformation
-                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' | 
+                ['relu'] | 'sigmoid' | 'tanh' | 'identity' | 'softplus' |
                 'elu' | 'quad'
-            normalize_weights (int): type of normalization to apply to the 
-                weights. Default [0] is to normalize across the first dimension 
-                (time/filters), but '1' will normalize across spatial 
+            normalize_weights (int): type of normalization to apply to the
+                weights. Default [0] is to normalize across the first dimension
+                (time/filters), but '1' will normalize across spatial
                 dimensions instead, and '2' will normalize both
             weights_initializer (str, optional): initializer for the weights
                 ['trunc_normal'] | 'normal' | 'zeros'
@@ -1279,26 +1740,27 @@ class SepLayer(Layer):
             num_lags = input_dims[3]
         else:
             num_lags = 1
-        num_space = input_dims[1]*input_dims[2]
+        num_space = input_dims[1] * input_dims[2]
 
-        filter_dims = [input_dims[0]*num_lags + num_space, 1, 1]
+        filter_dims = [input_dims[0] * num_lags + num_space, 1, 1]
         if normalize_weights < 0:
-            print('WARNING: maxnorm not implemented for SepLayer')
+            print("WARNING: maxnorm not implemented for SepLayer")
 
         super(SepLayer, self).__init__(
-                scope=scope,
-                #nlags=nlags,
-                input_dims=input_dims,
-                filter_dims=filter_dims,
-                output_dims=output_dims,
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer=weights_initializer,
-                biases_initializer=biases_initializer,
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            # nlags=nlags,
+            input_dims=input_dims,
+            filter_dims=filter_dims,
+            output_dims=output_dims,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer=weights_initializer,
+            biases_initializer=biases_initializer,
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         self.partial_fit = None
 
@@ -1306,72 +1768,80 @@ class SepLayer(Layer):
         self.reg = SepRegularization(
             input_dims=input_dims,
             num_outputs=self.reg.num_outputs,
-            vals=reg_initializer)
+            vals=reg_initializer,
+        )
+
     # END SepLayer.__init_
 
     def _define_layer_variables(self):
         # Define tensor-flow versions of variables (placeholder and variables)
 
         if self.partial_fit == 0:
-            wt = self.weights[:self.input_dims[0], :]
-            with tf.name_scope('weights_init'):
+            wt = self.weights[: self.input_dims[0], :]
+            with tf.name_scope("weights_init"):
                 self.weights_ph = tf.placeholder_with_default(
-                    wt, shape=wt.shape, name='wt_ph')
+                    wt, shape=wt.shape, name="wt_ph"
+                )
                 self.weights_var = tf.Variable(
-                    self.weights_ph, dtype=tf.float32, name='wt_var')
+                    self.weights_ph, dtype=tf.float32, name="wt_var"
+                )
         elif self.partial_fit == 1:
-            ws = self.weights[self.input_dims[0]:, :]
-            with tf.name_scope('weights_init'):
+            ws = self.weights[self.input_dims[0] :, :]
+            with tf.name_scope("weights_init"):
                 self.weights_ph = tf.placeholder_with_default(
-                    ws, shape=ws.shape, name='ws_ph')
+                    ws, shape=ws.shape, name="ws_ph"
+                )
                 self.weights_var = tf.Variable(
-                    self.weights_ph, dtype=tf.float32, name='ws_var')
+                    self.weights_ph, dtype=tf.float32, name="ws_var"
+                )
         else:
-            with tf.name_scope('weights_init'):
+            with tf.name_scope("weights_init"):
                 self.weights_ph = tf.placeholder_with_default(
-                    self.weights,
-                    shape=self.weights.shape,
-                    name='weights_ph')
+                    self.weights, shape=self.weights.shape, name="weights_ph"
+                )
                 self.weights_var = tf.Variable(
-                    self.weights_ph,
-                    dtype=tf.float32,
-                    name='weights_var')
+                    self.weights_ph, dtype=tf.float32, name="weights_var"
+                )
 
         # Initialize biases placeholder/variable
-        with tf.name_scope('biases_init'):
+        with tf.name_scope("biases_init"):
             self.biases_ph = tf.placeholder_with_default(
-                self.biases,
-                shape=self.biases.shape,
-                name='biases_ph')
+                self.biases, shape=self.biases.shape, name="biases_ph"
+            )
             self.biases_var = tf.Variable(
-                self.biases_ph,
-                dtype=tf.float32,
-                name='biases_var')
+                self.biases_ph, dtype=tf.float32, name="biases_var"
+            )
 
         # Check for need of ei_mask
         if np.sum(self.ei_mask) < len(self.ei_mask):
             self.ei_mask_var = tf.constant(
-                self.ei_mask, dtype=tf.float32, name='ei_mask')
+                self.ei_mask, dtype=tf.float32, name="ei_mask"
+            )
         else:
             self.ei_mask_var = None
+
     # END SepLayer._define_layer_variables
 
     def assign_layer_params(self, sess):
         """Read weights/biases in numpy arrays into tf Variables"""
         if self.partial_fit == 0:
-            wt = self.weights[:self.input_dims[0], :]
+            wt = self.weights[: self.input_dims[0], :]
             sess.run(
                 [self.weights_var.initializer, self.biases_var.initializer],
-                feed_dict={self.weights_ph: wt, self.biases_ph: self.biases})
+                feed_dict={self.weights_ph: wt, self.biases_ph: self.biases},
+            )
         elif self.partial_fit == 1:
-            ws = self.weights[self.input_dims[0]:, :]
+            ws = self.weights[self.input_dims[0] :, :]
             sess.run(
                 [self.weights_var.initializer, self.biases_var.initializer],
-                feed_dict={self.weights_ph: ws, self.biases_ph: self.biases})
+                feed_dict={self.weights_ph: ws, self.biases_ph: self.biases},
+            )
         else:
             sess.run(
                 [self.weights_var.initializer, self.biases_var.initializer],
-                feed_dict={self.weights_ph: self.weights, self.biases_ph: self.biases})
+                feed_dict={self.weights_ph: self.weights, self.biases_ph: self.biases},
+            )
+
     # END SepLayer.assign_layer_params
 
     def write_layer_params(self, sess):
@@ -1380,14 +1850,14 @@ class SepLayer(Layer):
         # rebuild self.weights
         if self.partial_fit == 0:
             wt = sess.run(self.weights_var)
-            ws = deepcopy(self.weights[self.input_dims[0]:, :])
+            ws = deepcopy(self.weights[self.input_dims[0] :, :])
         elif self.partial_fit == 1:
-            wt = deepcopy(self.weights[:self.input_dims[0], :])
+            wt = deepcopy(self.weights[: self.input_dims[0], :])
             ws = sess.run(self.weights_var)
         else:
             _tmp = sess.run(self.weights_var)
-            wt = _tmp[:self.input_dims[0], :]
-            ws = _tmp[self.input_dims[0]:, :]
+            wt = _tmp[: self.input_dims[0], :]
+            ws = _tmp[self.input_dims[0] :, :]
 
         if self.pos_constraint == 0:
             wt_p = np.maximum(0.0, wt)
@@ -1416,25 +1886,30 @@ class SepLayer(Layer):
             wt_pn = wt_p
             ws_pn = ws_p
 
-        self.weights[:self.input_dims[0], :] = wt_pn
-        self.weights[self.input_dims[0]:, :] = ws_pn
+        self.weights[: self.input_dims[0], :] = wt_pn
+        self.weights[self.input_dims[0] :, :] = ws_pn
 
         self.biases = sess.run(self.biases_var)
+
     # END SepLayer.write_layer_params
 
     def _separate_weights(self):
         # Section weights into first dimension and space
         if self.partial_fit == 0:
             kt = self.weights_var
-            ks = tf.constant(self.weights[self.input_dims[0]:, :], dtype=tf.float32)
+            ks = tf.constant(self.weights[self.input_dims[0] :, :], dtype=tf.float32)
         elif self.partial_fit == 1:
-            kt = tf.constant(self.weights[:self.input_dims[0], :], dtype=tf.float32)
+            kt = tf.constant(self.weights[: self.input_dims[0], :], dtype=tf.float32)
             ks = self.weights_var
         else:
-            kt = tf.slice(self.weights_var, [0, 0],
-                          [self.input_dims[0], self.num_filters])
-            ks = tf.slice(self.weights_var, [self.input_dims[0], 0],
-                          [self.input_dims[1] * self.input_dims[2], self.num_filters])
+            kt = tf.slice(
+                self.weights_var, [0, 0], [self.input_dims[0], self.num_filters]
+            )
+            ks = tf.slice(
+                self.weights_var,
+                [self.input_dims[0], 0],
+                [self.input_dims[1] * self.input_dims[2], self.num_filters],
+            )
 
         if self.pos_constraint == 0:
             kt_p = tf.maximum(0.0, kt)
@@ -1463,10 +1938,15 @@ class SepLayer(Layer):
             kt_pn = kt_p
             ks_pn = ks_p
 
-        w_full = tf.transpose(tf.reshape(tf.matmul(
-            tf.expand_dims(tf.transpose(ks_pn), 2),
-            tf.expand_dims(tf.transpose(kt_pn), 1)),
-            [self.num_filters, np.prod(self.input_dims)]))
+        w_full = tf.transpose(
+            tf.reshape(
+                tf.matmul(
+                    tf.expand_dims(tf.transpose(ks_pn), 2),
+                    tf.expand_dims(tf.transpose(kt_pn), 1),
+                ),
+                [self.num_filters, np.prod(self.input_dims)],
+            )
+        )
 
         return w_full
 
@@ -1485,12 +1965,14 @@ class SepLayer(Layer):
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                               noise_shape=[1, self.num_filters])
+            self.outputs = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END sepLayer._build_layer
 
     def define_regularization_loss(self):
@@ -1499,15 +1981,23 @@ class SepLayer(Layer):
             # Section weights into first dimension and space
             if self.partial_fit == 0:
                 kt = self.weights_var
-                ks = tf.constant(self.weights[self.input_dims[0]:, :], dtype=tf.float32)
+                ks = tf.constant(
+                    self.weights[self.input_dims[0] :, :], dtype=tf.float32
+                )
             elif self.partial_fit == 1:
-                kt = tf.constant(self.weights[:self.input_dims[0], :], dtype=tf.float32)
+                kt = tf.constant(
+                    self.weights[: self.input_dims[0], :], dtype=tf.float32
+                )
                 ks = self.weights_var
             else:
-                kt = tf.slice(self.weights_var, [0, 0],
-                              [self.input_dims[0], self.num_filters])
-                ks = tf.slice(self.weights_var, [self.input_dims[0], 0],
-                              [self.input_dims[1] * self.input_dims[2], self.num_filters])
+                kt = tf.slice(
+                    self.weights_var, [0, 0], [self.input_dims[0], self.num_filters]
+                )
+                ks = tf.slice(
+                    self.weights_var,
+                    [self.input_dims[0], 0],
+                    [self.input_dims[1] * self.input_dims[2], self.num_filters],
+                )
 
             if self.pos_constraint == 0:
                 kt_p = tf.maximum(0.0, kt)
@@ -1551,22 +2041,23 @@ class ConvSepLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            #nlags=None,
-            input_dims=None,    # this can be a list up to 3-dimensions
-            num_filters=None,
-            filter_dims=None,  # this can be a list up to 3-dimensions
-            shift_spacing=1,
-            # output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        # nlags=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        filter_dims=None,  # this can be a list up to 3-dimensions
+        shift_spacing=1,
+        # output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for sepLayer class
 
         Args:
@@ -1611,11 +2102,11 @@ class ConvSepLayer(Layer):
             else:
                 filter_dims = [filter_dims, 1, 1]
 
-        #if nlags is not None:
+        # if nlags is not None:
         #    filter_dims[0] *= nlags
         # Determine filter dimensions (first dim + space_dims)
-        num_space = filter_dims[1]*filter_dims[2]
-        num_input_dims_convsep = filter_dims[0]+num_space
+        num_space = filter_dims[1] * filter_dims[2]
+        num_input_dims_convsep = filter_dims[0] + num_space
 
         # If output dimensions already established, just strip out num_filters
         if isinstance(num_filters, list):
@@ -1624,35 +2115,35 @@ class ConvSepLayer(Layer):
         # Calculate number of shifts (for output)
         num_shifts = [1, 1]
         if input_dims[1] > 1:
-            num_shifts[0] = int(np.floor(input_dims[1]/shift_spacing))
+            num_shifts[0] = int(np.floor(input_dims[1] / shift_spacing))
         if input_dims[2] > 1:
-            num_shifts[1] = int(np.floor(input_dims[2]/shift_spacing))
+            num_shifts[1] = int(np.floor(input_dims[2] / shift_spacing))
         if normalize_weights < 0:
-            print('WARNING: maxnorm not implemented for ConvSepLayer')
+            print("WARNING: maxnorm not implemented for ConvSepLayer")
 
         super(ConvSepLayer, self).__init__(
-                scope=scope,
-                #nlags=nlags,
-                input_dims=input_dims,
-                filter_dims=filter_dims,
-                output_dims=num_filters,     # ! check this out... output_dims=num_filters?
-                my_num_inputs=num_input_dims_convsep,
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer=weights_initializer,
-                biases_initializer=biases_initializer,
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            # nlags=nlags,
+            input_dims=input_dims,
+            filter_dims=filter_dims,
+            output_dims=num_filters,  # ! check this out... output_dims=num_filters?
+            my_num_inputs=num_input_dims_convsep,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer=weights_initializer,
+            biases_initializer=biases_initializer,
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         self.partial_fit = None
 
         # Redefine specialized Regularization object to overwrite default
         self.reg = SepRegularization(
-            input_dims=filter_dims,
-            num_outputs=self.num_filters,
-            vals=reg_initializer)
+            input_dims=filter_dims, num_outputs=self.num_filters, vals=reg_initializer
+        )
 
         # ConvLayer-specific properties
         self.shift_spacing = shift_spacing
@@ -1660,6 +2151,7 @@ class ConvSepLayer(Layer):
         # Changes in properties from Layer - note this is implicitly
         # multi-dimensional
         self.output_dims = [num_filters] + num_shifts[:]
+
     # END ConvSepLayer.__init__
 
     #############################################################################################
@@ -1668,65 +2160,71 @@ class ConvSepLayer(Layer):
         # Define tensor-flow versions of variables (placeholder and variables)
 
         if self.partial_fit == 0:
-            wt = self.weights[:self.input_dims[0], :]
-            with tf.name_scope('weights_init'):
+            wt = self.weights[: self.input_dims[0], :]
+            with tf.name_scope("weights_init"):
                 self.weights_ph = tf.placeholder_with_default(
-                    wt, shape=wt.shape, name='wt_ph')
+                    wt, shape=wt.shape, name="wt_ph"
+                )
                 self.weights_var = tf.Variable(
-                    self.weights_ph, dtype=tf.float32, name='wt_var')
+                    self.weights_ph, dtype=tf.float32, name="wt_var"
+                )
         elif self.partial_fit == 1:
-            ws = self.weights[self.input_dims[0]:, :]
-            with tf.name_scope('weights_init'):
+            ws = self.weights[self.input_dims[0] :, :]
+            with tf.name_scope("weights_init"):
                 self.weights_ph = tf.placeholder_with_default(
-                    ws, shape=ws.shape, name='ws_ph')
+                    ws, shape=ws.shape, name="ws_ph"
+                )
                 self.weights_var = tf.Variable(
-                    self.weights_ph, dtype=tf.float32, name='ws_var')
+                    self.weights_ph, dtype=tf.float32, name="ws_var"
+                )
         else:
-            with tf.name_scope('weights_init'):
+            with tf.name_scope("weights_init"):
                 self.weights_ph = tf.placeholder_with_default(
-                    self.weights,
-                    shape=self.weights.shape,
-                    name='weights_ph')
+                    self.weights, shape=self.weights.shape, name="weights_ph"
+                )
                 self.weights_var = tf.Variable(
-                    self.weights_ph,
-                    dtype=tf.float32,
-                    name='weights_var')
+                    self.weights_ph, dtype=tf.float32, name="weights_var"
+                )
 
         # Initialize biases placeholder/variable
-        with tf.name_scope('biases_init'):
+        with tf.name_scope("biases_init"):
             self.biases_ph = tf.placeholder_with_default(
-                self.biases,
-                shape=self.biases.shape,
-                name='biases_ph')
+                self.biases, shape=self.biases.shape, name="biases_ph"
+            )
             self.biases_var = tf.Variable(
-                self.biases_ph,
-                dtype=tf.float32,
-                name='biases_var')
+                self.biases_ph, dtype=tf.float32, name="biases_var"
+            )
 
         # Check for need of ei_mask
         if np.sum(self.ei_mask) < len(self.ei_mask):
             self.ei_mask_var = tf.constant(
-                self.ei_mask, dtype=tf.float32, name='ei_mask')
+                self.ei_mask, dtype=tf.float32, name="ei_mask"
+            )
         else:
             self.ei_mask_var = None
+
     # END ConvSepLayer._define_layer_variables
 
     def assign_layer_params(self, sess):
         """Read weights/biases in numpy arrays into tf Variables"""
         if self.partial_fit == 0:
-            wt = self.weights[:self.input_dims[0], :]
+            wt = self.weights[: self.input_dims[0], :]
             sess.run(
                 [self.weights_var.initializer, self.biases_var.initializer],
-                feed_dict={self.weights_ph: wt, self.biases_ph: self.biases})
+                feed_dict={self.weights_ph: wt, self.biases_ph: self.biases},
+            )
         elif self.partial_fit == 1:
-            ws = self.weights[self.input_dims[0]:, :]
+            ws = self.weights[self.input_dims[0] :, :]
             sess.run(
                 [self.weights_var.initializer, self.biases_var.initializer],
-                feed_dict={self.weights_ph: ws, self.biases_ph: self.biases})
+                feed_dict={self.weights_ph: ws, self.biases_ph: self.biases},
+            )
         else:
             sess.run(
                 [self.weights_var.initializer, self.biases_var.initializer],
-                feed_dict={self.weights_ph: self.weights, self.biases_ph: self.biases})
+                feed_dict={self.weights_ph: self.weights, self.biases_ph: self.biases},
+            )
+
     # END ConvSepLayer.assign_layer_params
 
     def write_layer_params(self, sess):
@@ -1735,14 +2233,14 @@ class ConvSepLayer(Layer):
         # rebuild self.weights
         if self.partial_fit == 0:
             wt = sess.run(self.weights_var)
-            ws = deepcopy(self.weights[self.input_dims[0]:, :])
+            ws = deepcopy(self.weights[self.input_dims[0] :, :])
         elif self.partial_fit == 1:
-            wt = deepcopy(self.weights[:self.input_dims[0], :])
+            wt = deepcopy(self.weights[: self.input_dims[0], :])
             ws = sess.run(self.weights_var)
         else:
             _tmp = sess.run(self.weights_var)
-            wt = _tmp[:self.input_dims[0], :]
-            ws = _tmp[self.input_dims[0]:, :]
+            wt = _tmp[: self.input_dims[0], :]
+            ws = _tmp[self.input_dims[0] :, :]
 
         if self.pos_constraint == 0:
             wt_p = np.maximum(0.0, wt)
@@ -1771,10 +2269,11 @@ class ConvSepLayer(Layer):
             wt_pn = wt_p
             ws_pn = ws_p
 
-        self.weights[:self.input_dims[0], :] = wt_pn
-        self.weights[self.input_dims[0]:, :] = ws_pn
+        self.weights[: self.input_dims[0], :] = wt_pn
+        self.weights[self.input_dims[0] :, :] = ws_pn
 
         self.biases = sess.run(self.biases_var)
+
     # END ConvSepLayer.write_layer_params
 
     def define_regularization_loss(self):
@@ -1783,15 +2282,23 @@ class ConvSepLayer(Layer):
             # Section weights into first dimension and space
             if self.partial_fit == 0:
                 kt = self.weights_var
-                ks = tf.constant(self.weights[self.input_dims[0]:, :], dtype=tf.float32)
+                ks = tf.constant(
+                    self.weights[self.input_dims[0] :, :], dtype=tf.float32
+                )
             elif self.partial_fit == 1:
-                kt = tf.constant(self.weights[:self.input_dims[0], :], dtype=tf.float32)
+                kt = tf.constant(
+                    self.weights[: self.input_dims[0], :], dtype=tf.float32
+                )
                 ks = self.weights_var
             else:
-                kt = tf.slice(self.weights_var, [0, 0],
-                              [self.input_dims[0], self.num_filters])
-                ks = tf.slice(self.weights_var, [self.input_dims[0], 0],
-                              [self.filter_dims[1] * self.filter_dims[2], self.num_filters])
+                kt = tf.slice(
+                    self.weights_var, [0, 0], [self.input_dims[0], self.num_filters]
+                )
+                ks = tf.slice(
+                    self.weights_var,
+                    [self.input_dims[0], 0],
+                    [self.filter_dims[1] * self.filter_dims[2], self.num_filters],
+                )
 
             if self.pos_constraint == 0:
                 kt_p = tf.maximum(0.0, kt)
@@ -1831,15 +2338,19 @@ class ConvSepLayer(Layer):
         # Section weights into first dimension and space
         if self.partial_fit == 0:
             kt = self.weights_var
-            ks = tf.constant(self.weights[self.input_dims[0]:, :], dtype=tf.float32)
+            ks = tf.constant(self.weights[self.input_dims[0] :, :], dtype=tf.float32)
         elif self.partial_fit == 1:
-            kt = tf.constant(self.weights[:self.input_dims[0], :], dtype=tf.float32)
+            kt = tf.constant(self.weights[: self.input_dims[0], :], dtype=tf.float32)
             ks = self.weights_var
         else:
-            kt = tf.slice(self.weights_var, [0, 0],
-                          [self.input_dims[0], self.num_filters])
-            ks = tf.slice(self.weights_var, [self.input_dims[0], 0],
-                          [self.filter_dims[1] * self.filter_dims[2], self.num_filters])
+            kt = tf.slice(
+                self.weights_var, [0, 0], [self.input_dims[0], self.num_filters]
+            )
+            ks = tf.slice(
+                self.weights_var,
+                [self.input_dims[0], 0],
+                [self.filter_dims[1] * self.filter_dims[2], self.num_filters],
+            )
 
         if self.pos_constraint == 0:
             kt_p = tf.maximum(0.0, kt)
@@ -1868,10 +2379,15 @@ class ConvSepLayer(Layer):
             kt_pn = kt_p
             ks_pn = ks_p
 
-        w_full = tf.transpose(tf.reshape(tf.matmul(
-            tf.expand_dims(tf.transpose(ks_pn), 2),
-            tf.expand_dims(tf.transpose(kt_pn), 1)),
-            [self.num_filters, np.prod(self.filter_dims)]))
+        w_full = tf.transpose(
+            tf.reshape(
+                tf.matmul(
+                    tf.expand_dims(tf.transpose(ks_pn), 2),
+                    tf.expand_dims(tf.transpose(kt_pn), 1),
+                ),
+                [self.num_filters, np.prod(self.filter_dims)],
+            )
+        )
 
         return w_full
 
@@ -1883,13 +2399,21 @@ class ConvSepLayer(Layer):
 
             # now conv part of the computation begins:
             # Reshape of inputs (4-D):
-            input_dims = [-1, self.input_dims[2], self.input_dims[1],
-                          self.input_dims[0]]
+            input_dims = [
+                -1,
+                self.input_dims[2],
+                self.input_dims[1],
+                self.input_dims[0],
+            ]
             shaped_input = tf.reshape(inputs, input_dims)
 
             # Reshape weights (4:D:
-            conv_filter_dims = [self.filter_dims[2], self.filter_dims[1],
-                                self.filter_dims[0], self.num_filters]
+            conv_filter_dims = [
+                self.filter_dims[2],
+                self.filter_dims[1],
+                self.filter_dims[0],
+                self.num_filters,
+            ]
             ws_conv = tf.reshape(weights_full, conv_filter_dims)
 
             # Make strides list
@@ -1899,7 +2423,7 @@ class ConvSepLayer(Layer):
             if conv_filter_dims[1] > 1:
                 strides[2] = self.shift_spacing
 
-            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides, padding='SAME')
+            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides, padding="SAME")
             pre = tf.add(_pre, self.biases_var)
 
             if self.ei_mask_var is None:
@@ -1907,14 +2431,18 @@ class ConvSepLayer(Layer):
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            post_drpd = self._apply_dropout(post, use_dropout=use_dropout,
-                                            noise_shape=[1, 1, 1, self.num_filters])
+            post_drpd = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, 1, 1, self.num_filters]
+            )
             self.outputs = tf.reshape(
-                post_drpd, [-1, self.num_filters * self.num_shifts[0] * self.num_shifts[1]])
+                post_drpd,
+                [-1, self.num_filters * self.num_shifts[0] * self.num_shifts[1]],
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END ConvSepLayer._build_layer
 
 
@@ -1927,17 +2455,18 @@ class AddLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            #nlags=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        # nlags=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for sepLayer class
 
         Args:
@@ -1962,40 +2491,41 @@ class AddLayer(Layer):
 
         # check for required inputs
         if input_dims is None or output_dims is None:
-            raise TypeError('Must specify input and output dimensions')
+            raise TypeError("Must specify input and output dimensions")
 
-        num_outputs = np.prod( output_dims )
+        num_outputs = np.prod(output_dims)
         num_input_streams = int(np.prod(input_dims) / num_outputs)
 
         # Output dims combine input dims over first dimension
         output_dims = [1] + input_dims[1:]
         if input_dims[0] > num_input_streams:
-            output_dims[0] = (input_dims[0] // num_input_streams)
+            output_dims[0] = input_dims[0] // num_input_streams
 
         # Input dims is just number of input streams
         input_dims = [num_input_streams, 1, 1]
 
         if normalize_weights < 0:
-            print('WARNING: maxnorm not implemented for SepLayer')
+            print("WARNING: maxnorm not implemented for SepLayer")
 
         super(AddLayer, self).__init__(
-                scope=scope,
-                #nlags=nlags,
-                input_dims=input_dims,
-                filter_dims=input_dims,
-                output_dims=num_outputs,
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer='zeros',
-                biases_initializer='zeros',
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            # nlags=nlags,
+            input_dims=input_dims,
+            filter_dims=input_dims,
+            output_dims=num_outputs,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer="zeros",
+            biases_initializer="zeros",
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         self.output_dims = output_dims
         # Initialize all weights to 1, which is the default combination
-        self.weights[:, :] = 1.0/np.sqrt(num_input_streams)
+        self.weights[:, :] = 1.0 / np.sqrt(num_input_streams)
         self.biases[:] = 1e-8
 
     # END AddLayer.__init__
@@ -2026,12 +2556,19 @@ class AddLayer(Layer):
                 else:
                     w_pn = w_p
 
-                flattened_weights = tf.reshape(w_pn, [1, num_input_streams*num_outputs])
+                flattened_weights = tf.reshape(
+                    w_pn, [1, num_input_streams * num_outputs]
+                )
                 # Define computation -- different from layer in that this is a broadcast-multiply
                 # rather than  matmul
                 # Sum over input streams for given output
-                _pre = tf.reduce_sum(tf.reshape(tf.multiply(inputs, flattened_weights),
-                                                [-1, num_input_streams, num_outputs]), axis=1)
+                _pre = tf.reduce_sum(
+                    tf.reshape(
+                        tf.multiply(inputs, flattened_weights),
+                        [-1, num_input_streams, num_outputs],
+                    ),
+                    axis=1,
+                )
 
             pre = tf.add(_pre, self.biases_var)
 
@@ -2040,12 +2577,14 @@ class AddLayer(Layer):
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                               noise_shape=[1, self.num_filters])
+            self.outputs = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END AddLayer._build_graph
 
     def write_layer_params(self, sess):
@@ -2065,8 +2604,8 @@ class AddLayer(Layer):
         else:
             w_pn = w_p
 
-        #flattened_weights = np.reshape(w_pn, [num_input_streams, num_outputs])
-        self.weights = w_pn #flattened_weights
+        # flattened_weights = np.reshape(w_pn, [num_input_streams, num_outputs])
+        self.weights = w_pn  # flattened_weights
         self.biases = sess.run(self.biases_var)
 
 
@@ -2074,20 +2613,21 @@ class MultLayer(Layer):
     """Implementation of a simple multiplicative layer that combines two input streams multiplicatively,
     with the output of each pair of streams (x_n, y_n) given by z_n = x_n * (1+y_n)
     This has a number of [output] units, and number of input streams, each which the exact same
-    size as the number of output units. 
+    size as the number of output units.
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for sepLayer class
 
         Args:
@@ -2112,36 +2652,41 @@ class MultLayer(Layer):
 
         # check for required inputs
         if input_dims is None or output_dims is None:
-            raise TypeError('Must specify input and output dimensions')
+            raise TypeError("Must specify input and output dimensions")
 
         num_outputs = np.prod(output_dims)
         num_input_streams = int(np.prod(input_dims) / num_outputs)
         # Enforce number of input streams is 2
-        assert num_input_streams == 2, 'Number of input streams for MultLayer must be 2.'
+        assert (
+            num_input_streams == 2
+        ), "Number of input streams for MultLayer must be 2."
 
         # Input dims is just number of input streams
-        output_dims = [1] + input_dims[1:]  # constrained to be the same but collapsed first dim
+        output_dims = [1] + input_dims[
+            1:
+        ]  # constrained to be the same but collapsed first dim
         input_dims = [num_input_streams, 1, 1]
-        
+
         # can have overal weights, but not otherwise fit (so weight dims is output dims
 
         super(MultLayer, self).__init__(
-                scope=scope,
-                input_dims=input_dims,
-                filter_dims=[1, 1, 1],
-                output_dims=output_dims,
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer='normal',
-                biases_initializer='zeros',
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            input_dims=input_dims,
+            filter_dims=[1, 1, 1],
+            output_dims=output_dims,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer="normal",
+            biases_initializer="zeros",
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         self.output_dims = output_dims
         # Initialize all weights to very small deviations about 0, which would have minimal mult power
-        self.weights[:, :] = 1.0 # default is multplication is transparent
+        self.weights[:, :] = 1.0  # default is multplication is transparent
 
     # END MultLayer.__init__
 
@@ -2160,42 +2705,53 @@ class MultLayer(Layer):
             if self.pos_constraint is not None:
                 if self.pos_constraint > 0:
                     w_p = tf.maximum(self.weights_var, 0.0)
-                else:  
-                    w_p = tf.maximum(self.weights_var, tf.minimum(self.weights_var, 0.0), -1)
+                else:
+                    w_p = tf.maximum(
+                        self.weights_var, tf.minimum(self.weights_var, 0.0), -1
+                    )
             else:
                 w_p = self.weights_var
 
-            multipliers = tf.maximum( tf.add(
-                tf.multiply( tf.slice( inputs, [0, num_outputs], [-1, num_outputs]), w_p),
-                1.0), 0.0)
+            multipliers = tf.maximum(
+                tf.add(
+                    tf.multiply(
+                        tf.slice(inputs, [0, num_outputs], [-1, num_outputs]), w_p
+                    ),
+                    1.0,
+                ),
+                0.0,
+            )
 
-            #if self.normalize_weights > 0:
+            # if self.normalize_weights > 0:
             #    w_pn = tf.nn.l2_normalize(w_p, axis=0)
-            #else:
+            # else:
             #    w_pn = w_p
 
-            pre = tf.add(tf.multiply(
-                tf.slice( inputs, [0, 0], [-1, num_outputs]), 
-                multipliers), self.biases_var)
+            pre = tf.add(
+                tf.multiply(tf.slice(inputs, [0, 0], [-1, num_outputs]), multipliers),
+                self.biases_var,
+            )
 
             if self.ei_mask_var is None:
                 post = self._apply_act_func(pre)
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                               noise_shape=[1, self.num_filters])
+            self.outputs = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END MultLayer._build_graph
 
     def write_layer_params(self, sess):
         """Write weights/biases in tf Variables to numpy arrays"""
 
-        #num_input_streams = self.input_dims[0]
-        #num_outputs = self.output_dims[1]
+        # num_input_streams = self.input_dims[0]
+        # num_outputs = self.output_dims[1]
         _tmp_weights = sess.run(self.weights_var)
 
         if self.pos_constraint is not None:
@@ -2206,13 +2762,14 @@ class MultLayer(Layer):
         else:
             w_p = _tmp_weights
 
-        #if (self.normalize_weights > 0) and (num_input_streams != 1):
+        # if (self.normalize_weights > 0) and (num_input_streams != 1):
         #    w_pn = sk_normalize(w_p, axis=0)
-        #else:
+        # else:
         #    w_pn = w_p
 
         self.weights = w_p
         self.biases = sess.run(self.biases_var)
+
     # END MultLayer.write_layer_params
 
 
@@ -2224,15 +2781,16 @@ class FilterLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            activation_func='lin',
-            normalize_weights=1,
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        activation_func="lin",
+        normalize_weights=1,
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for sepLayer class
 
         Args:
@@ -2257,23 +2815,25 @@ class FilterLayer(Layer):
 
         # check for required inputs
         if input_dims is None:
-            raise TypeError('Must specify input dimensions')
+            raise TypeError("Must specify input dimensions")
 
         super(FilterLayer, self).__init__(
-                scope=scope,
-                input_dims=input_dims,
-                filter_dims=[input_dims[0], 1, 1],
-                output_dims=[1]+input_dims[1:3],
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer='zeros',
-                biases_initializer='zeros',
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            input_dims=input_dims,
+            filter_dims=[input_dims[0], 1, 1],
+            output_dims=[1] + input_dims[1:3],
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer="zeros",
+            biases_initializer="zeros",
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         self.include_biases = False
+
     # END FilterLayer.__init__
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
@@ -2302,42 +2862,46 @@ class FilterLayer(Layer):
             if self.include_biases:
                 pre = tf.add(
                     tf.reduce_sum(tf.multiply(mult_inputs, tf.transpose(w_pn)), axis=2),
-                    self.biases_var)
+                    self.biases_var,
+                )
             else:
-                pre = tf.reduce_sum(tf.multiply(mult_inputs, tf.transpose(w_pn)), axis=2)
+                pre = tf.reduce_sum(
+                    tf.multiply(mult_inputs, tf.transpose(w_pn)), axis=2
+                )
 
             if self.ei_mask_var is None:
                 post = self._apply_act_func(pre)
             else:
                 post = tf.multiply(self._apply_act_func(pre), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                               noise_shape=[1, self.num_filters])
+            self.outputs = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END FilterLayer._build_graph
 
 
 class Dim0Layer(Layer):
-    """Implementation of a layer that applies filters to first stimulus dimension (non-spatial) only
-
-    """
+    """Implementation of a layer that applies filters to first stimulus dimension (non-spatial) only"""
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            output_dims=None,
-            activation_func='lin',
-            normalize_weights=1,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        output_dims=None,
+        activation_func="lin",
+        normalize_weights=1,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
 
         """Constructor for Dim0Layer class
 
@@ -2363,29 +2927,33 @@ class Dim0Layer(Layer):
 
         # check for required inputs
         if input_dims is None:
-            raise TypeError('Must specify input dimensions')
+            raise TypeError("Must specify input dimensions")
 
         if input_dims[0] < 2:
-            raise TypeError('Dim0Layer: Input dimensions must have dimensionality.')
+            raise TypeError("Dim0Layer: Input dimensions must have dimensionality.")
 
         super(Dim0Layer, self).__init__(
-                scope=scope,
-                input_dims=input_dims,
-                filter_dims=[input_dims[0], 1, 1],
-                output_dims=output_dims, 
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer='zeros',
-                biases_initializer='zeros',
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            input_dims=input_dims,
+            filter_dims=[input_dims[0], 1, 1],
+            output_dims=output_dims,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer="zeros",
+            biases_initializer="zeros",
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         # num_lags not implemented yet
-        assert self.num_lags == 1, 'Havent taken care of number of lags being non-one yet.'
+        assert (
+            self.num_lags == 1
+        ), "Havent taken care of number of lags being non-one yet."
         self.output_dims = [np.prod(output_dims), input_dims[1], input_dims[2]]
         self.include_biases = False
+
     # END Dim0Layer.__init__
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
@@ -2403,35 +2971,37 @@ class Dim0Layer(Layer):
                 w_pn = tf.nn.l2_normalize(w_p, axis=0)
             else:
                 w_pn = w_p
-            
+
             # reshape inputs and multiply
             dim0 = self.filter_dims[0]
             num_other_dims = np.prod(self.input_dims) // dim0
 
             reshaped_inputs = tf.reshape(inputs, [-1, num_other_dims, dim0])
-            #reshaped_weights = tf.expand_dims( w_pn, axis=0)
-            
+            # reshaped_weights = tf.expand_dims( w_pn, axis=0)
+
             if self.include_biases:
                 pre = tf.add(
-                    tf.tensordot(reshaped_inputs, w_pn, axes=[2,0]),
-                    self.biases_var)
+                    tf.tensordot(reshaped_inputs, w_pn, axes=[2, 0]), self.biases_var
+                )
             else:
-                #pre = tf.matmul(reshaped_inputs, reshaped_weights),
-                pre = tf.tensordot(reshaped_inputs, w_pn, axes=[2,0]),
+                # pre = tf.matmul(reshaped_inputs, reshaped_weights),
+                pre = (tf.tensordot(reshaped_inputs, w_pn, axes=[2, 0]),)
 
-            pre2 = tf.reshape(pre, [-1, num_other_dims*self.num_filters])
+            pre2 = tf.reshape(pre, [-1, num_other_dims * self.num_filters])
 
             if self.ei_mask_var is None:
                 post = self._apply_act_func(pre2)
             else:
                 post = tf.multiply(self._apply_act_func(pre2), self.ei_mask_var)
 
-            self.outputs = self._apply_dropout(post, use_dropout=use_dropout,
-                                               noise_shape=[1, self.num_filters])
+            self.outputs = self._apply_dropout(
+                post, use_dropout=use_dropout, noise_shape=[1, self.num_filters]
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END Dim0Layer._build_graph
 
 
@@ -2442,10 +3012,11 @@ class SpkNL_Layer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,    # this can be a list up to 3-dimensions
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        log_activations=False,
+    ):
         """Constructor for SepLayer class
 
         Args:
@@ -2472,22 +3043,23 @@ class SpkNL_Layer(Layer):
         else:
             input_dims = [1, input_dims, 1]  # assume 1-dimensional (space)
 
-
         super(SpkNL_Layer, self).__init__(
-                scope=scope,
-                input_dims=input_dims,
-                filter_dims=[2, 1, 1],
-                output_dims=input_dims,
-                activation_func='lin',
-                normalize_weights=0,
-                weights_initializer='ones',
-                biases_initializer='zeros',
-                reg_initializer=None,
-                num_inh=0,
-                pos_constraint=False,
-                log_activations=log_activations)
+            scope=scope,
+            input_dims=input_dims,
+            filter_dims=[2, 1, 1],
+            output_dims=input_dims,
+            activation_func="lin",
+            normalize_weights=0,
+            weights_initializer="ones",
+            biases_initializer="zeros",
+            reg_initializer=None,
+            num_inh=0,
+            pos_constraint=False,
+            log_activations=log_activations,
+        )
 
         self.three_param_fit = False
+
     # END SpkNLLayer.__init_
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
@@ -2495,25 +3067,34 @@ class SpkNL_Layer(Layer):
 
         _MAX_Y_3PAR = 5
         if self.three_param_fit:
-            self.weights[0, :] = np.minimum(self.weights[:, 0], _MAX_Y_3PAR-0.2)
+            self.weights[0, :] = np.minimum(self.weights[:, 0], _MAX_Y_3PAR - 0.2)
 
         with tf.name_scope(self.scope):
             self._define_layer_variables()
 
             if self.three_param_fit:
-                _pre = tf.add(tf.multiply(inputs, _MAX_Y_3PAR * tf.sigmoid(self.weights_var[:, 0])),
-                              self.biases_var)
-                post = tf.multiply(self.weights_var[1,:], tf.log( tf.add( tf.exp(_pre), 1.0)))
+                _pre = tf.add(
+                    tf.multiply(
+                        inputs, _MAX_Y_3PAR * tf.sigmoid(self.weights_var[:, 0])
+                    ),
+                    self.biases_var,
+                )
+                post = tf.multiply(
+                    self.weights_var[1, :], tf.log(tf.add(tf.exp(_pre), 1.0))
+                )
             else:
-                #_pre = tf.add( tf.multiply( inputs, self.weights_var[:, 0]), self.biases_var)
-                #post = tf.log( tf.add( tf.exp(_pre), 1.0) )
-                post = tf.nn.softplus(tf.add(tf.multiply(inputs, self.weights_var[:, 0]), self.biases_var))
+                # _pre = tf.add( tf.multiply( inputs, self.weights_var[:, 0]), self.biases_var)
+                # post = tf.log( tf.add( tf.exp(_pre), 1.0) )
+                post = tf.nn.softplus(
+                    tf.add(tf.multiply(inputs, self.weights_var[:, 0]), self.biases_var)
+                )
 
             self.outputs = post
 
         if self.log:
-            tf.summary.histogram('act_pre', _pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", _pre)
+            tf.summary.histogram("act_post", post)
+
     # END SpkNL._build_graph
 
 
@@ -2526,17 +3107,18 @@ class SpikeHistoryLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            #nlags=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        # nlags=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for sepLayer class
 
         Args:
@@ -2561,24 +3143,25 @@ class SpikeHistoryLayer(Layer):
 
         # check for required inputs
         if input_dims is None or output_dims is None:
-            raise TypeError('Must specify input and output dimensions')
+            raise TypeError("Must specify input and output dimensions")
         filter_dims = input_dims[:]
         filter_dims[1] = 1
 
         super(SpikeHistoryLayer, self).__init__(
-                scope=scope,
-                #nlags=nlags,
-                input_dims=input_dims,
-                filter_dims=filter_dims,
-                output_dims=output_dims,
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer='trunc_normal',
-                biases_initializer='zeros',
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            # nlags=nlags,
+            input_dims=input_dims,
+            filter_dims=filter_dims,
+            output_dims=output_dims,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer="trunc_normal",
+            biases_initializer="zeros",
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         # Initialize all weights to be positive (and will be multiplied by -1
         self.biases[:] = 0
@@ -2594,15 +3177,23 @@ class SpikeHistoryLayer(Layer):
             self._define_layer_variables()
 
             if self.pos_constraint is not None:
-                ws_flat = tf.reshape(tf.maximum(0.0, tf.transpose(self.weights_var)),
-                                     [1, self.input_dims[0]*self.input_dims[1]])
+                ws_flat = tf.reshape(
+                    tf.maximum(0.0, tf.transpose(self.weights_var)),
+                    [1, self.input_dims[0] * self.input_dims[1]],
+                )
             else:
-                ws_flat = tf.reshape(tf.transpose(self.weights_var),
-                                     [1, self.input_dims[0]*self.input_dims[1]])
+                ws_flat = tf.reshape(
+                    tf.transpose(self.weights_var),
+                    [1, self.input_dims[0] * self.input_dims[1]],
+                )
 
-            pre = tf.reduce_sum(tf.reshape(tf.multiply(inputs, ws_flat),
-                                           [-1, self.input_dims[1], self.input_dims[0]]),
-                                axis=2)
+            pre = tf.reduce_sum(
+                tf.reshape(
+                    tf.multiply(inputs, ws_flat),
+                    [-1, self.input_dims[1], self.input_dims[0]],
+                ),
+                axis=2,
+            )
 
             # Dont put in any biases: pre = tf.add( pre, self.biases_var)
 
@@ -2614,8 +3205,9 @@ class SpikeHistoryLayer(Layer):
             self.outputs = post
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END SpikeHistoryLayer._build_graph
 
 
@@ -2630,21 +3222,22 @@ class BiConvLayer(ConvLayer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            num_filters=None,
-            filter_dims=None,  # this can be a list up to 3-dimensions
-            include_reflect=False,
-            shift_spacing=1,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='trunc_normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        filter_dims=None,  # this can be a list up to 3-dimensions
+        include_reflect=False,
+        shift_spacing=1,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="trunc_normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for convLayer class
 
         Args:
@@ -2689,36 +3282,46 @@ class BiConvLayer(ConvLayer):
             reg_initializer=reg_initializer,
             num_inh=num_inh,
             pos_constraint=pos_constraint,  # note difference from layer (not anymore)
-            log_activations=log_activations)
+            log_activations=log_activations,
+        )
 
         # BiConvLayer-specific modifications
         self.include_reflect = include_reflect
         self.num_shifts[0] = self.num_shifts[0]
-        self.output_dims[0] = self.num_filters*2
-        self.output_dims[1] = int(self.num_shifts[0]/2)
+        self.output_dims[0] = self.num_filters * 2
+        self.output_dims[1] = int(self.num_shifts[0] / 2)
         if include_reflect:
             self.output_dims[0] *= 2
-            print('Reflecting:', self.output_dims)
+            print("Reflecting:", self.output_dims)
+
     # END BiConvLayer.__init__
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
 
-        assert params_dict is not None, 'Incorrect layer initialization.'
+        assert params_dict is not None, "Incorrect layer initialization."
 
         with tf.name_scope(self.scope):
             self._define_layer_variables()
 
             # Computation performed in the layer
             # Reshape of inputs (4-D):
-            input_dims = [-1, self.input_dims[2],
-                          self.input_dims[1], self.input_dims[0]]
+            input_dims = [
+                -1,
+                self.input_dims[2],
+                self.input_dims[1],
+                self.input_dims[0],
+            ]
             # this is reverse-order from Matlab:
             # [space-2, space-1, lags, and num_examples]
             shaped_input = tf.reshape(inputs, input_dims)
 
             # Reshape weight-dims (4:D):
-            conv_filter_dims = [self.filter_dims[2], self.filter_dims[1],
-                                self.filter_dims[0], self.num_filters]
+            conv_filter_dims = [
+                self.filter_dims[2],
+                self.filter_dims[1],
+                self.filter_dims[0],
+                self.num_filters,
+            ]
 
             if self.pos_constraint is not None:
                 w_p = tf.maximum(self.weights_var, 0.0)
@@ -2731,8 +3334,10 @@ class BiConvLayer(ConvLayer):
                 w_pn = w_p
 
             if self.include_reflect:
-                transform_mat = np.kron(np.flipud(np.eye(self.filter_dims[1])), np.eye(self.filter_dims[0]))
-                flip_sp_dims = tf.constant(transform_mat, dtype='float32')
+                transform_mat = np.kron(
+                    np.flipud(np.eye(self.filter_dims[1])), np.eye(self.filter_dims[0])
+                )
+                flip_sp_dims = tf.constant(transform_mat, dtype="float32")
                 w_c = tf.concat([w_pn, tf.matmul(flip_sp_dims, w_pn)], 1)
 
                 biases = tf.concat([self.biases_var, self.biases_var], 1)
@@ -2751,7 +3356,7 @@ class BiConvLayer(ConvLayer):
             if conv_filter_dims[1] > 1:
                 strides[2] = self.shift_spacing
 
-            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides, padding='SAME')
+            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides, padding="SAME")
             pre = tf.add(_pre, biases)
 
             if self.ei_mask_var is not None:
@@ -2761,14 +3366,19 @@ class BiConvLayer(ConvLayer):
 
             # cut into left and right processing and reattach
             left_post = tf.slice(post, [0, 0, 0, 0], [-1, -1, self.output_dims[1], -1])
-            right_post = tf.slice(post, [0, 0, self.output_dims[1], 0],
-                             [-1, -1, self.output_dims[1], -1])
+            right_post = tf.slice(
+                post, [0, 0, self.output_dims[1], 0], [-1, -1, self.output_dims[1], -1]
+            )
 
-            self.outputs = tf.reshape(tf.concat([left_post, right_post], axis=3), [-1, np.prod(self.output_dims)])
+            self.outputs = tf.reshape(
+                tf.concat([left_post, right_post], axis=3),
+                [-1, np.prod(self.output_dims)],
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END BiConvLayer.build_graph
 
 
@@ -2777,18 +3387,19 @@ class ReadoutLayer(Layer):
     on neuron-by-neuron basis"""
 
     def __init__(
-            self,
-            scope=None,
-            input_dims=None,    # this can be a list up to 3-dimensions
-            output_dims=None,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='trunc_normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        output_dims=None,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="trunc_normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for ReadoutLayer class
 
         Args:
@@ -2815,27 +3426,29 @@ class ReadoutLayer(Layer):
                 activations
 
         """
-        # Implement layer almost verbatim 
+        # Implement layer almost verbatim
         super(ReadoutLayer, self).__init__(
-                scope=scope,
-                #nlags=nlags,
-                input_dims=input_dims,
-                filter_dims=None,
-                output_dims=output_dims,
-                activation_func=activation_func,
-                normalize_weights=normalize_weights,
-                weights_initializer=weights_initializer,
-                biases_initializer=biases_initializer,
-                reg_initializer=reg_initializer,
-                num_inh=num_inh,
-                pos_constraint=pos_constraint,
-                log_activations=log_activations)
+            scope=scope,
+            # nlags=nlags,
+            input_dims=input_dims,
+            filter_dims=None,
+            output_dims=output_dims,
+            activation_func=activation_func,
+            normalize_weights=normalize_weights,
+            weights_initializer=weights_initializer,
+            biases_initializer=biases_initializer,
+            reg_initializer=reg_initializer,
+            num_inh=num_inh,
+            pos_constraint=pos_constraint,
+            log_activations=log_activations,
+        )
 
         # Redefine specialized Regularization object to overwrite default
         self.reg = UnitRegularization(
             input_dims=self.input_dims,
             num_outputs=self.reg.num_outputs,
-            vals=reg_initializer)
+            vals=reg_initializer,
+        )
 
     # END ReadoutLayer.__init_
 
@@ -2849,22 +3462,24 @@ class ConvLayerLNL(ConvLayer):
             directions for convolution operation
 
     """
+
     def __init__(
-            self,
-            scope=None,
-            #nlags=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            num_filters=None,
-            filter_dims=None,  # this can be a list up to 3-dimensions
-            shift_spacing=1,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='trunc_normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        # nlags=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        filter_dims=None,  # this can be a list up to 3-dimensions
+        shift_spacing=1,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="trunc_normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for ConvLayer class
 
         Args:
@@ -2897,7 +3512,7 @@ class ConvLayerLNL(ConvLayer):
 
         super(ConvLayerLNL, self).__init__(
             scope=scope,
-            #nlags=nlags,
+            # nlags=nlags,
             input_dims=input_dims,
             filter_dims=filter_dims,
             output_dims=num_filters,  # Note difference from layer
@@ -2908,17 +3523,18 @@ class ConvLayerLNL(ConvLayer):
             reg_initializer=reg_initializer,
             num_inh=num_inh,
             pos_constraint=pos_constraint,  # note difference from layer (not anymore)
-            log_activations=log_activations)
+            log_activations=log_activations,
+        )
 
         # LNL-ConvLayer-specific properties -- additional set of outputs corresponding to linear
         # output of filters
-        self.output_dims[0] = self.output_dims[0]*2
+        self.output_dims[0] = self.output_dims[0] * 2
 
     # END ConvLayerLNL.__init__
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
 
-        assert params_dict is not None, 'Incorrect siLayer initialization.'
+        assert params_dict is not None, "Incorrect siLayer initialization."
         # Unfold siLayer-specific parameters for building graph
 
         with tf.name_scope(self.scope):
@@ -2926,15 +3542,23 @@ class ConvLayerLNL(ConvLayer):
 
             # Computation performed in the layer
             # Reshape of inputs (4-D):
-            input_dims = [-1, self.input_dims[2], self.input_dims[1],
-                          self.input_dims[0]]
+            input_dims = [
+                -1,
+                self.input_dims[2],
+                self.input_dims[1],
+                self.input_dims[0],
+            ]
             # this is reverse-order from Matlab:
             # [space-2, space-1, lags, and num_examples]
             shaped_input = tf.reshape(inputs, input_dims)
 
             # Reshape weights (4:D:
-            conv_filter_dims = [self.filter_dims[2], self.filter_dims[1], self.filter_dims[0],
-                                self.num_filters]
+            conv_filter_dims = [
+                self.filter_dims[2],
+                self.filter_dims[1],
+                self.filter_dims[0],
+                self.num_filters,
+            ]
 
             if self.pos_constraint is not None:
                 w_p = tf.maximum(self.weights_var, 0.0)
@@ -2956,7 +3580,7 @@ class ConvLayerLNL(ConvLayer):
             if conv_filter_dims[2] > 1:
                 strides[2] = self.shift_spacing
 
-            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides, padding='SAME')
+            _pre = tf.nn.conv2d(shaped_input, ws_conv, strides, padding="SAME")
             pre = tf.add(_pre, self.biases_var)
 
             if self.ei_mask_var is None:
@@ -2966,14 +3590,20 @@ class ConvLayerLNL(ConvLayer):
 
             pre_post = tf.concat(tf.multiply(pre, self.ei_mask_var), post, axis=-1)
 
-            post_drpd = self._apply_dropout(pre_post, use_dropout=use_dropout,
-                                            noise_shape=[1, 1, 1, 2*self.num_filters])
+            post_drpd = self._apply_dropout(
+                pre_post,
+                use_dropout=use_dropout,
+                noise_shape=[1, 1, 1, 2 * self.num_filters],
+            )
             self.outputs = tf.reshape(
-                post_drpd, [-1, 2*self.num_filters * self.num_shifts[0] * self.num_shifts[1]])
+                post_drpd,
+                [-1, 2 * self.num_filters * self.num_shifts[0] * self.num_shifts[1]],
+            )
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END ConvLayerLNL.build_graph
 
 
@@ -2987,20 +3617,21 @@ class HadiReadoutLayer(Layer):
     """
 
     def __init__(
-            self,
-            scope=None,
-            #nlags=None,
-            input_dims=None,  # this can be a list up to 3-dimensions
-            num_filters=None,
-            xy_out=None,
-            activation_func='relu',
-            normalize_weights=0,
-            weights_initializer='normal',
-            biases_initializer='zeros',
-            reg_initializer=None,
-            num_inh=0,
-            pos_constraint=None,
-            log_activations=False):
+        self,
+        scope=None,
+        # nlags=None,
+        input_dims=None,  # this can be a list up to 3-dimensions
+        num_filters=None,
+        xy_out=None,
+        activation_func="relu",
+        normalize_weights=0,
+        weights_initializer="normal",
+        biases_initializer="zeros",
+        reg_initializer=None,
+        num_inh=0,
+        pos_constraint=None,
+        log_activations=False,
+    ):
         """Constructor for ConvLayer class
 
         Args:
@@ -3038,7 +3669,7 @@ class HadiReadoutLayer(Layer):
 
         super(HadiReadoutLayer, self).__init__(
             scope=scope,
-            #nlags=nlags,
+            # nlags=nlags,
             input_dims=input_dims,
             filter_dims=filter_dims,
             output_dims=num_filters,  # Note difference from layer
@@ -3049,7 +3680,8 @@ class HadiReadoutLayer(Layer):
             reg_initializer=reg_initializer,
             num_inh=num_inh,
             pos_constraint=pos_constraint,  # note difference from layer (not anymore)
-            log_activations=log_activations)
+            log_activations=log_activations,
+        )
 
         self.xy_out = xy_out
         if self.xy_out is None:
@@ -3061,15 +3693,19 @@ class HadiReadoutLayer(Layer):
         self.reg = UnitRegularization(
             input_dims=[input_dims[0], 1, 1],
             num_outputs=self.reg.num_outputs,
-            vals=reg_initializer)
+            vals=reg_initializer,
+        )
+
     # END HadiReadoutLayer.__init__
 
     def _get_indices(self, batch_sz):
         nc = self.num_filters
         space_pos = self.xy_out[:, 1] * self.input_dims[1] + self.xy_out[:, 0]
-        space_ind = zip(np.repeat(np.arange(batch_sz), nc),
-                        np.tile(space_pos, (batch_sz,)),
-                        np.tile(np.arange(nc), (batch_sz,)))
+        space_ind = zip(
+            np.repeat(np.arange(batch_sz), nc),
+            np.tile(space_pos, (batch_sz,)),
+            np.tile(np.arange(nc), (batch_sz,)),
+        )
         return tf.constant(space_ind, dtype=tf.int32)
 
     def build_graph(self, inputs, params_dict=None, batch_size=None, use_dropout=False):
@@ -3093,13 +3729,17 @@ class HadiReadoutLayer(Layer):
             # pre0/pre -> (b, nc)
 
             shaped_inputs = tf.reshape(
-                inputs, (-1, self.input_dims[2] * self.input_dims[1], self.input_dims[0]))
+                inputs,
+                (-1, self.input_dims[2] * self.input_dims[1], self.input_dims[0]),
+            )
 
             indices = self._get_indices(int(shaped_inputs.shape[0]))
 
             if self.xy_out is not None:
                 inputs_dot_w = tf.tensordot(shaped_inputs, k_pn, [-1, 0])
-                pre0 = tf.reshape(tf.gather_nd(inputs_dot_w, indices), (-1, self.num_filters))
+                pre0 = tf.reshape(
+                    tf.gather_nd(inputs_dot_w, indices), (-1, self.num_filters)
+                )
                 pre = tf.add(pre0, self.biases_var)
             else:
                 pre = tf.add(tf.matmul(inputs, k_pn), self.biases_var)
@@ -3112,6 +3752,7 @@ class HadiReadoutLayer(Layer):
             self.outputs = post
 
         if self.log:
-            tf.summary.histogram('act_pre', pre)
-            tf.summary.histogram('act_post', post)
+            tf.summary.histogram("act_pre", pre)
+            tf.summary.histogram("act_post", post)
+
     # END ConvReadoutLayer.build_graph

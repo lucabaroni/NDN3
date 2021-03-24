@@ -7,19 +7,20 @@ import tensorflow as tf
 from .layer import *
 from .tlayer import *
 
+
 class FFNetwork(object):
-    """Implementation of simple fully-connected feed-forward neural network. 
-    These networks can be composed to create much more complex network 
+    """Implementation of simple fully-connected feed-forward neural network.
+    These networks can be composed to create much more complex network
     architectures using the NDN class.
 
     Attributes:
-        input_dims (list of ints): three-element list containing the dimensions 
-            of the input to the network, in the form 
-            [num_lags, num_x_pix, num_y_pix]. If the input does not have 
+        input_dims (list of ints): three-element list containing the dimensions
+            of the input to the network, in the form
+            [num_lags, num_x_pix, num_y_pix]. If the input does not have
             spatial or temporal structure, this should be [1, num_inputs, 1].
         scope (str): name scope for network
         num_layers (int): number of layers in network (not including input)
-        layer_types (list of strs): a string for each layer in the network that 
+        layer_types (list of strs): a string for each layer in the network that
             specifies its type.
             'normal' | 'sep' | 'conv' | 'convsep' | 'biconv' | 'add' | 'mult' | 'spike_history'
                     | 'convLNL' | 'dim0'
@@ -28,18 +29,15 @@ class FFNetwork(object):
 
     """
 
-    def __init__(self,
-                 scope=None,
-                 input_dims=None,
-                 params_dict=None):
+    def __init__(self, scope=None, input_dims=None, params_dict=None):
         """Constructor for FFNetwork class
 
         Args:
             scope (str): name scope for network
-            input_dims (list of ints): three-element list containing the 
-                dimensions of the input to the network, in the form 
-                [num_lags, num_x_pix, num_y_pix]. If the input does not have 
-                spatial or temporal structure, this should be 
+            input_dims (list of ints): three-element list containing the
+                dimensions of the input to the network, in the form
+                [num_lags, num_x_pix, num_y_pix]. If the input does not have
+                spatial or temporal structure, this should be
                 [1, num_inputs, 1]
 
             params_dict (dict): contains parameters about details of FFnetwork:

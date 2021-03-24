@@ -380,7 +380,7 @@ class FFNetwork(object):
                     )
                 )
 
-            elif self.layer_types[nn] == "conv":
+            elif self.layer_types[nn] == 'conv' or self.layer_types[nn] == 'conv_diff_of_gaussians':
 
                 if network_params["conv_filter_widths"][nn] is None:
                     conv_filter_size = layer_sizes[nn]
@@ -398,28 +398,34 @@ class FFNetwork(object):
                     if layer_sizes[nn][2] > 1:
                         conv_filter_size[2] = network_params["conv_filter_widths"][nn]
 
-                if self.layer_types[nn] == "conv":
-                    self.layers.append(
-                        ConvLayer(
-                            scope="conv_layer_%i" % nn,
-                            input_dims=layer_sizes[nn],
-                            num_filters=layer_sizes[nn + 1],
-                            filter_dims=conv_filter_size,
-                            shift_spacing=network_params["shift_spacing"][nn],
-                            activation_func=network_params["activation_funcs"][nn],
-                            normalize_weights=network_params["normalize_weights"][nn],
-                            weights_initializer=network_params["weights_initializers"][
-                                nn
-                            ],
-                            biases_initializer=network_params["biases_initializers"][
-                                nn
-                            ],
-                            reg_initializer=network_params["reg_initializers"][nn],
-                            num_inh=network_params["num_inh"][nn],
-                            pos_constraint=network_params["pos_constraints"][nn],
-                            log_activations=network_params["log_activations"],
-                        )
-                    )
+                if self.layer_types[nn] == 'conv':
+                    self.layers.append(ConvLayer(
+                        scope='conv_layer_%i' % nn,
+                        input_dims=layer_sizes[nn],
+                        num_filters=layer_sizes[nn+1],
+                        filter_dims=conv_filter_size,
+                        shift_spacing=network_params['shift_spacing'][nn],
+                        activation_func=network_params['activation_funcs'][nn],
+                        normalize_weights=network_params['normalize_weights'][nn],
+                        weights_initializer=network_params['weights_initializers'][nn],
+                        biases_initializer=network_params['biases_initializers'][nn],
+                        reg_initializer=network_params['reg_initializers'][nn],
+                        num_inh=network_params['num_inh'][nn],
+                        pos_constraint=network_params['pos_constraints'][nn],
+                        log_activations=network_params['log_activations']))
+                elif self.layer_types[nn] == 'conv_diff_of_gaussians':
+                    self.layers.append(ConvDiffOfGaussiansLayer(
+                        scope='conv_dog_layer_%i' % nn,
+                        input_dims=layer_sizes[nn],
+                        num_filters=layer_sizes[nn+1],
+                        bounds=network_params['bounds'][nn] if 'bounds' in network_params else None,
+                        filter_dims=conv_filter_size,
+                        shift_spacing=network_params['shift_spacing'][nn],
+                        activation_func=network_params['activation_funcs'][nn],
+                        weights_initializer=network_params['weights_initializers'][nn],
+                        biases_initializer=network_params['biases_initializers'][nn],
+                        num_inh=network_params['num_inh'][nn],
+                        log_activations=network_params['log_activations']))
 
                 # Modify output size to take into account shifts
                 # if nn < self.num_layers:
@@ -491,6 +497,15 @@ class FFNetwork(object):
                         log_activations=network_params["log_activations"],
                     )
                 )
+
+            elif self.layer_types[nn] == 'lin_scale':
+                self.layers.append(LinScale(
+                    scope='lin_scale_%i' % nn,
+                    input_dims=layer_sizes[nn],
+                    activation_func=network_params['activation_funcs'][nn],
+                    reg_initializer=network_params['reg_initializers'][nn],
+                    pos_constraint=network_params['pos_constraints'][nn],
+                    log_activations=network_params['log_activations']))
 
             elif self.layer_types[nn] == "diff_of_gaussians":
                 self.layers.append(

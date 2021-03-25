@@ -847,7 +847,7 @@ class DiffOfGaussiansLayer(Layer):
 
     def get_DoG(self, weights, W, H, num_filters):
         (alpha1, sigma1, ux1, uy1) = self.__get_weights_clipped(weights, num_filters, 0)
-        (alphbbbbbbbbbb`a2, sigma2, ux2, uy2) = self.__get_weights_clipped(weights, num_filters, 1)
+        (alpha2, sigma2, ux2, uy2) = self.__get_weights_clipped(weights, num_filters, 1)
 
         X, Y = np.meshgrid(W, H)
         X = tf.constant(np.expand_dims(X, 2).astype(np.float32))
